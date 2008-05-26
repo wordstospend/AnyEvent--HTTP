@@ -1,0 +1,4 @@
+Revision history for AnyEvent::LWP
+
+1.0  
+	- original version, a AnyEvent::AIO clone.

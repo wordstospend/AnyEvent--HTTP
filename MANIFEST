@@ -1,0 +1,7 @@
+README
+MANIFEST
+COPYING
+Changes
+Makefile.PL
+LWP.pm
+t/00_load.t
