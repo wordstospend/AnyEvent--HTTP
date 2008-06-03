@@ -3,5 +3,5 @@ MANIFEST
 COPYING
 Changes
 Makefile.PL
-LWP.pm
+HTTP.pm
 t/00_load.t
