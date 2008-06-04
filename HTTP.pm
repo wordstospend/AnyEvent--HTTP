@@ -128,7 +128,25 @@ this module might offer more options).
 
 =back
 
-=back
+Example: make a simple HTTP GET request for http://www.nethype.de/
+
+   http_request GET => "http://www.nethype.de/", sub {
+      my ($body, $hdr) = @_;
+      print "$body\n";
+   };
+
+Example: make a HTTP HEAD request on https://www.google.com/, use a
+timeout of 30 seconds.
+
+   http_request
+      GET     => "https://www.google.com",
+      timeout => 30,
+      sub {
+         my ($body, $hdr) = @_;
+         use Data::Dumper;
+         print Dumper $hdr;
+      }
+   ;
 
 =cut
 
@@ -318,6 +336,8 @@ sub http_post($$$;@) {
    unshift @_, "POST", "body";
    &http_request
 }
+
+=back
 
 =head2 GLOBAL FUNCTIONS AND VARIABLES
 
