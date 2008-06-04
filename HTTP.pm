@@ -243,7 +243,10 @@ sub http_request($$$;@) {
             substr $_, 0, 1, ""
                for values %hdr;
 
-            if ($method ne "HEAD") {
+            if ($method eq "HEAD") {
+               %state = ();
+               $cb->(undef, \%hdr);
+            } else {
                if (exists $hdr{"content-length"}) {
                   $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
                      # could cache persistent connection now
@@ -276,6 +279,11 @@ sub http_request($$$;@) {
 
 sub http_get($$;@) {
    unshift @_, "GET";
+   &http_request
+}
+
+sub http_head($$;@) {
+   unshift @_, "HEAD";
    &http_request
 }
 
