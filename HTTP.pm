@@ -54,7 +54,12 @@ my %KA_COUNT; # number of open keep-alive connections per host
 Executes an HTTP-GET request. See the http_request function for details on
 additional parameters.
 
-=item http_get $url, $body, key => value..., $cb->($data, $headers)
+=item http_head $url, key => value..., $cb->($data, $headers)
+
+Executes an HTTP-HEAD request. See the http_request function for details on
+additional parameters.
+
+=item http_post $url, $body, key => value..., $cb->($data, $headers)
 
 Executes an HTTP-POST request with a requets body of C<$bod>. See the
 http_request function for details on additional parameters.
