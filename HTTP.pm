@@ -35,15 +35,17 @@ our $VERSION = '1.0';
 
 our @EXPORT = qw(http_get http_request);
 
-our $MAX_REDIRECTS      = 10;
 our $USERAGENT          = "Mozilla/5.0 (compatible; AnyEvent::HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)";
-our $MAX_PERSISTENT     =  8;
-our $PERSISTENT_TIMEOUT = 15;
-our $TIMEOUT            = 60;
+our $MAX_REDIRECTS      =  10;
+our $MAX_PERSISTENT     =   8;
+our $PERSISTENT_TIMEOUT =   2;
+our $TIMEOUT            = 300;
 
 # changing these is evil
 our $MAX_PERSISTENT_PER_HOST = 2;
 our $MAX_PER_HOST       = 4; # not respected yet :(
+
+our $PROXY;
 
 my %KA_COUNT; # number of open keep-alive connections per host
 
@@ -56,6 +58,19 @@ additional parameters.
 
 Executes a HTTP request of type C<$method> (e.g. C<GET>, C<POST>). The URL
 must be an absolute http or https URL.
+
+The callback will be called with the response data as first argument
+(or C<undef> if it wasn't available due to errors), and a hash-ref with
+response headers as second argument.
+
+All the headers in that has are lowercased. In addition to the response
+headers, the three "pseudo-headers" C<HTTPVersion>, C<Status> and
+C<Reason> contain the three parts of the HTTP Status-Line of the same
+name.
+
+If an internal error occurs, such as not being able to resolve a hostname,
+then C<$data> will be C<undef>, C<< $headers->{Status} >> will be C<599>
+and the C<Reason> pseudo-header will contain an error message.
 
 Additional parameters are key-value pairs, and are fully optional. They
 include:
@@ -74,7 +89,15 @@ The request headers to use.
 =item timeout => $seconds
 
 The time-out to use for various stages - each connect attempt will reset
-the timeout, as will read or write activity.
+the timeout, as will read or write activity. Default timeout is 5 minutes.
+
+=item proxy => [$host, $port[, $scheme]] or undef
+
+Use the given http proxy for all requests. If not specified, then the
+default proxy (as specified by C<$ENV{http_proxy}>) is used.
+
+C<$scheme> must be either missing or C<http> for HTTP, or C<https> for
+HTTPS.
 
 =back
 
@@ -94,28 +117,39 @@ sub http_request($$$;@) {
       }
    }
 
+   my $proxy   = $arg{proxy}   || $PROXY;
    my $timeout = $arg{timeout} || $TIMEOUT;
 
    $hdr{"user-agent"} ||= $USERAGENT;
 
-   my ($scheme, $authority, $path, $query, $fragment) =
-      $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?|;
+   my ($host, $port, $path, $scheme);
 
-   $scheme = lc $scheme;
-   my $port = $scheme eq "http"  ? 80
+   if ($proxy) {
+      ($host, $port, $scheme) = @$proxy;
+      $path = $url;
+   } else {
+      ($scheme, my $authority, $path, my $query, my $fragment) =
+         $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?|;
+
+      $port = $scheme eq "http"  ?  80
             : $scheme eq "https" ? 443
             : croak "$url: only http and https URLs supported";
 
-   $authority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
-      or croak "$authority: unparsable URL";
+      $authority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
+         or croak "$authority: unparsable URL";
 
-   my $host = $1;
-   $port = $2 if defined $2;
+      $host = $1;
+      $port = $2 if defined $2;
 
-   $host =~ s/^\[(.*)\]$/$1/;
-   $path .= "?$query" if length $query;
+      $host =~ s/^\[(.*)\]$/$1/;
+      $path .= "?$query" if length $query;
 
-   $hdr{host} = $host = lc $host;
+      $path = "/" unless $path;
+
+      $hdr{host} = $host = lc $host;
+   }
+
+   $scheme = lc $scheme;
 
    my %state;
 
@@ -140,6 +174,7 @@ sub http_request($$$;@) {
          ++$KA_COUNT{$_[1]};
          $state{handle}{ka_count_guard} = AnyEvent::Util::guard { --$KA_COUNT{$_[1]} };
          $hdr{connection} = "keep-alive";
+         delete $hdr{connection}; # keep-alive not yet supported
       } else {
          delete $hdr{connection};
       }
@@ -179,9 +214,11 @@ sub http_request($$$;@) {
          # headers, could be optimized a bit
          $state{handle}->unshift_read (line => qr/\015?\012\015?\012/, sub {
             for ("$_[1]\012") {
+               # we support spaces in field names, as lotus domino
+               # creates them.
                $hdr{lc $1} .= ",$2"
                   while /\G
-                        ([^:\000-\040]+):
+                        ([^:\000-\037]+):
                         [\011\040]*
                         ((?: [^\015\012]+ | \015?\012[\011\040] )*)
                         \015?\012
@@ -198,6 +235,7 @@ sub http_request($$$;@) {
                $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
                   # could cache persistent connection now
                   if ($hdr{connection} =~ /\bkeep-alive\b/i) {
+                     # but we don't, due to misdesigns, this is annoyingly complex
                   };
 
                   %state = ();
@@ -227,9 +265,14 @@ sub http_get($$;@) {
    &http_request
 }
 
-=head2 GLOBAL VARIABLES
+=head2 GLOBAL FUNCTIONS AND VARIABLES
 
 =over 4
+
+=item AnyEvent::HTTP::set_proxy "proxy-url"
+
+Sets the default proxy server to use. The proxy-url must begin with a
+string of the form C<http://host:port> (optionally C<https:...>).
 
 =item $AnyEvent::HTTP::MAX_REDIRECTS
 
@@ -247,11 +290,18 @@ The maximum number of persistent connections to keep open (default: 8).
 
 =item $AnyEvent::HTTP::PERSISTENT_TIMEOUT
 
-The maximum time to cache a persistent connection, in seconds (default: 15).
+The maximum time to cache a persistent connection, in seconds (default: 2).
 
 =back
 
 =cut
+
+sub set_proxy($) {
+   $PROXY = [$2, $3 || 3128, $1] if $_[0] =~ m%^(https?):// ([^:/]+) (?: : (\d*) )?%ix;
+}
+
+# initialise proxy from environment
+set_proxy $ENV{http_proxy};
 
 =head1 SEE ALSO
 
