@@ -36,7 +36,7 @@ our $VERSION = '1.0';
 our @EXPORT = qw(http_get http_request);
 
 our $USERAGENT          = "Mozilla/5.0 (compatible; AnyEvent::HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)";
-our $MAX_REDIRECTS      =  10;
+our $MAX_RECURSE        =  10;
 our $MAX_PERSISTENT     =   8;
 our $PERSISTENT_TIMEOUT =   2;
 our $TIMEOUT            = 300;
@@ -53,6 +53,11 @@ my %KA_COUNT; # number of open keep-alive connections per host
 
 Executes an HTTP-GET request. See the http_request function for details on
 additional parameters.
+
+=item http_get $url, $body, key => value..., $cb->($data, $headers)
+
+Executes an HTTP-POST request with a requets body of C<$bod>. See the
+http_request function for details on additional parameters.
 
 =item http_request $method => $url, key => value..., $cb->($data, $headers)
 
@@ -77,10 +82,10 @@ include:
 
 =over 4
 
-=item recurse => $boolean (default: true)
+=item recurse => $count (default: $MAX_RECURSE)
 
 Whether to recurse requests or not, e.g. on redirects, authentication
-retries and so on.
+retries and so on, and how often to do so.
 
 =item headers => hashref
 
@@ -99,6 +104,11 @@ default proxy (as specified by C<$ENV{http_proxy}>) is used.
 C<$scheme> must be either missing or C<http> for HTTP, or C<https> for
 HTTPS.
 
+=item body => $string
+
+The request body, usually empty. Will be-sent as-is (future versions of
+this module might offer more options).
+
 =back
 
 =back
@@ -111,6 +121,8 @@ sub http_request($$$;@) {
 
    my %hdr;
 
+   $method = uc $method;
+
    if (my $hdr = delete $arg{headers}) {
       while (my ($k, $v) = each %$hdr) {
          $hdr{lc $k} = $v;
@@ -119,6 +131,7 @@ sub http_request($$$;@) {
 
    my $proxy   = $arg{proxy}   || $PROXY;
    my $timeout = $arg{timeout} || $TIMEOUT;
+   my $recurse = exists $arg{recurse} ? $arg{recurse} : $MAX_RECURSE;
 
    $hdr{"user-agent"} ||= $USERAGENT;
 
@@ -153,10 +166,9 @@ sub http_request($$$;@) {
 
    my %state;
 
-   my $body = "";
-   $state{body} = $body;
+   $state{body} = delete $arg{body};
 
-   $hdr{"content-length"} = length $body;
+   $hdr{"content-length"} = length $state{body};
 
    $state{connect_guard} = AnyEvent::Socket::tcp_connect $host, $port, sub {
       $state{fh} = shift
@@ -192,7 +204,7 @@ sub http_request($$$;@) {
 
       # send request
       $state{handle}->push_write (
-         "\U$method\E $path HTTP/1.0\015\012"
+         "$method $path HTTP/1.0\015\012"
          . (join "", map "$_: $hdr{$_}\015\012", keys %hdr)
          . "\015\012"
          . (delete $state{body})
@@ -231,25 +243,27 @@ sub http_request($$$;@) {
             substr $_, 0, 1, ""
                for values %hdr;
 
-            if (exists $hdr{"content-length"}) {
-               $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
-                  # could cache persistent connection now
-                  if ($hdr{connection} =~ /\bkeep-alive\b/i) {
-                     # but we don't, due to misdesigns, this is annoyingly complex
-                  };
+            if ($method ne "HEAD") {
+               if (exists $hdr{"content-length"}) {
+                  $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
+                     # could cache persistent connection now
+                     if ($hdr{connection} =~ /\bkeep-alive\b/i) {
+                        # but we don't, due to misdesigns, this is annoyingly complex
+                     };
 
-                  %state = ();
-                  $cb->($_[1], \%hdr);
-               });
-            } else {
-               # too bad, need to read until we get an error or EOF,
-               # no way to detect winged data.
-               $_[0]->on_error (sub {
-                  %state = ();
-                  $cb->($_[0]{rbuf}, \%hdr);
-               });
-               $_[0]->on_eof (undef);
-               $_[0]->on_read (sub { });
+                     %state = ();
+                     $cb->($_[1], \%hdr);
+                  });
+               } else {
+                  # too bad, need to read until we get an error or EOF,
+                  # no way to detect winged data.
+                  $_[0]->on_error (sub {
+                     %state = ();
+                     $cb->($_[0]{rbuf}, \%hdr);
+                  });
+                  $_[0]->on_eof (undef);
+                  $_[0]->on_read (sub { });
+               }
             }
          });
       });
@@ -265,6 +279,11 @@ sub http_get($$;@) {
    &http_request
 }
 
+sub http_post($$$;@) {
+   unshift @_, "POST", "body";
+   &http_request
+}
+
 =head2 GLOBAL FUNCTIONS AND VARIABLES
 
 =over 4
@@ -274,10 +293,9 @@ sub http_get($$;@) {
 Sets the default proxy server to use. The proxy-url must begin with a
 string of the form C<http://host:port> (optionally C<https:...>).
 
-=item $AnyEvent::HTTP::MAX_REDIRECTS
+=item $AnyEvent::HTTP::MAX_RECURSE
 
-The default value for the C<max_redirects> request parameter
-(default: C<10>).
+The default value for the C<recurse> request parameter (default: C<10>).
 
 =item $AnyEvent::HTTP::USERAGENT
 
@@ -288,9 +306,13 @@ C<Mozilla/5.0 (compatible; AnyEvent::HTTP/$VERSION; +http://software.schmorp.de/
 
 The maximum number of persistent connections to keep open (default: 8).
 
+Not implemented currently.
+
 =item $AnyEvent::HTTP::PERSISTENT_TIMEOUT
 
 The maximum time to cache a persistent connection, in seconds (default: 2).
+
+Not implemented currently.
 
 =back
 
