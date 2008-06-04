@@ -82,6 +82,18 @@ If an internal error occurs, such as not being able to resolve a hostname,
 then C<$data> will be C<undef>, C<< $headers->{Status} >> will be C<599>
 and the C<Reason> pseudo-header will contain an error message.
 
+A typical callback might look like this:
+
+   sub {
+      my ($body, $hdr) = @_;
+
+      if ($hdr->{Status} =~ /^2/) {
+         ... everything should be ok
+      } else {
+         print "error, $hdr->{Status} $hdr->{Reason}\n";
+      }
+   }
+
 Additional parameters are key-value pairs, and are fully optional. They
 include:
 
