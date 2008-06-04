@@ -140,15 +140,19 @@ sub http_request($$$;@) {
 
    $method = uc $method;
 
-   if (my $hdr = delete $arg{headers}) {
+   if (my $hdr = $arg{headers}) {
       while (my ($k, $v) = each %$hdr) {
          $hdr{lc $k} = $v;
       }
    }
 
+   my $recurse = exists $arg{recurse} ? $arg{recurse} : $MAX_RECURSE;
+
+   return $cb->(undef, { Status => 599, Reason => "recursion limit reached" })
+      if $recurse < 0;
+
    my $proxy   = $arg{proxy}   || $PROXY;
    my $timeout = $arg{timeout} || $TIMEOUT;
-   my $recurse = exists $arg{recurse} ? $arg{recurse} : $MAX_RECURSE;
 
    $hdr{"user-agent"} ||= $USERAGENT;
 
@@ -163,10 +167,10 @@ sub http_request($$$;@) {
 
       $port = $scheme eq "http"  ?  80
             : $scheme eq "https" ? 443
-            : croak "$url: only http and https URLs supported";
+            : return $cb->(undef, { Status => 599, Reason => "$url: only http and https URLs supported" });
 
       $authority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
-         or croak "$authority: unparsable URL";
+         or return $cb->(undef, { Status => 599, Reason => "$url: unparsable URL" });
 
       $host = $1;
       $port = $2 if defined $2;
@@ -183,9 +187,7 @@ sub http_request($$$;@) {
 
    my %state;
 
-   $state{body} = delete $arg{body};
-
-   $hdr{"content-length"} = length $state{body};
+   $hdr{"content-length"} = length $arg{body};
 
    $state{connect_guard} = AnyEvent::Socket::tcp_connect $host, $port, sub {
       $state{fh} = shift
@@ -224,7 +226,7 @@ sub http_request($$$;@) {
          "$method $path HTTP/1.0\015\012"
          . (join "", map "$_: $hdr{$_}\015\012", keys %hdr)
          . "\015\012"
-         . (delete $state{body})
+         . (delete $arg{body})
       );
 
       %hdr = (); # reduce memory usage, save a kitten
@@ -260,9 +262,17 @@ sub http_request($$$;@) {
             substr $_, 0, 1, ""
                for values %hdr;
 
-            if ($method eq "HEAD") {
+            my $finish = sub {
+               if ($_[1]{Status} =~ /^30[12]$/ && $recurse) {
+                  http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+               } else {
+                  $cb->($_[0], $_[1]);
+               }
+            };
+
+            if ($hdr{Status} =~ /^(?:1..|204|304)$/ or $method eq "HEAD") {
                %state = ();
-               $cb->(undef, \%hdr);
+               $finish->(undef, \%hdr);
             } else {
                if (exists $hdr{"content-length"}) {
                   $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
@@ -272,14 +282,14 @@ sub http_request($$$;@) {
                      };
 
                      %state = ();
-                     $cb->($_[1], \%hdr);
+                     $finish->($_[1], \%hdr);
                   });
                } else {
                   # too bad, need to read until we get an error or EOF,
                   # no way to detect winged data.
                   $_[0]->on_error (sub {
                      %state = ();
-                     $cb->($_[0]{rbuf}, \%hdr);
+                     $finish->($_[0]{rbuf}, \%hdr);
                   });
                   $_[0]->on_eof (undef);
                   $_[0]->on_read (sub { });
