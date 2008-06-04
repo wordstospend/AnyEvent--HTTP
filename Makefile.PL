@@ -9,7 +9,7 @@ my $mm = MM->new({
     NAME         => "AnyEvent::HTTP",
     VERSION_FROM => "HTTP.pm",
     PREREQ_PM    => {
-       AnyEvent  => 4.05,
+       AnyEvent  => 4.13,
     },
 });
 
