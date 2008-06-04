@@ -61,7 +61,7 @@ additional parameters.
 
 =item http_post $url, $body, key => value..., $cb->($data, $headers)
 
-Executes an HTTP-POST request with a requets body of C<$bod>. See the
+Executes an HTTP-POST request with a request body of C<$bod>. See the
 http_request function for details on additional parameters.
 
 =item http_request $method => $url, key => value..., $cb->($data, $headers)
@@ -73,7 +73,7 @@ The callback will be called with the response data as first argument
 (or C<undef> if it wasn't available due to errors), and a hash-ref with
 response headers as second argument.
 
-All the headers in that has are lowercased. In addition to the response
+All the headers in that hash are lowercased. In addition to the response
 headers, the three "pseudo-headers" C<HTTPVersion>, C<Status> and
 C<Reason> contain the three parts of the HTTP Status-Line of the same
 name.
