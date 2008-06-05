@@ -11,6 +11,21 @@ AnyEvent::HTTP - simple but non-blocking HTTP/HTTPS client
 This module is an L<AnyEvent> user, you need to make sure that you use and
 run a supported event loop.
 
+This module implements a simple, stateless and non-blocking HTTP
+client. It supports GET, POST and other request methods, cookies and more,
+all on a very low level. It can follow redirects supports proxies and
+automatically limits the number of connections to the values specified in
+the RFC.
+
+It should generally be a "good client" that is enough for most HTTP
+tasks. Simple tasks should be simple, but complex tasks should still be
+possible as the user retains control over request and response headers.
+
+The caller is responsible for authentication management, cookies (if
+the simplistic implementation in this module doesn't suffice), referer
+and other high-level protocol details for which this module offers only
+limited support.
+
 =head2 METHODS
 
 =over 4
@@ -43,11 +58,12 @@ our $TIMEOUT            = 300;
 
 # changing these is evil
 our $MAX_PERSISTENT_PER_HOST = 2;
-our $MAX_PER_HOST       = 4; # not respected yet :(
+our $MAX_PER_HOST       = 4;
 
 our $PROXY;
 
 my %KA_COUNT; # number of open keep-alive connections per host
+my %CO_SLOT;  # number of open connections, and wait queue, per host
 
 =item http_get $url, key => value..., $cb->($data, $headers)
 
@@ -167,6 +183,34 @@ timeout of 30 seconds.
 
 =cut
 
+sub _slot_schedule($) {
+   my $host = shift;
+
+   while ($CO_SLOT{$host}[0] < $MAX_PER_HOST) {
+      if (my $cb = shift @{ $CO_SLOT{$host}[1] }) {
+         # somebody wnats that slot
+         ++$CO_SLOT{$host}[0];
+
+         $cb->(AnyEvent::Util::guard {
+            --$CO_SLOT{$host}[0];
+            _slot_schedule $host;
+         });
+      } else {
+         # nobody wants the slot, maybe we can forget about it
+         delete $CO_SLOT{$host} unless $CO_SLOT{$host}[0];
+         warn "$host deleted" unless $CO_SLOT{$host}[0];#d#
+         last;
+      }
+   }
+}
+
+# wait for a free slot on host, call callback
+sub _get_slot($$) {
+   push @{ $CO_SLOT{$_[0]}[1] }, $_[1];
+
+   _slot_schedule $_[0];
+}
+
 sub http_request($$$;@) {
    my $cb = pop;
    my ($method, $url, %arg) = @_;
@@ -247,142 +291,151 @@ sub http_request($$$;@) {
 
    $hdr{"content-length"} = length $arg{body};
 
-   my %state;
+   my %state = (connect_guard => 1);
 
-   $state{connect_guard} = AnyEvent::Socket::tcp_connect $rhost, $rport, sub {
-      $state{fh} = shift
-         or return $cb->(undef, { Status => 599, Reason => "$!" });
+   _get_slot $uhost, sub {
+      $state{slot_guard} = shift;
 
-      delete $state{connect_guard}; # reduce memory usage, save a tree
+      return unless $state{connect_guard};
 
-      # get handle
-      $state{handle} = new AnyEvent::Handle
-         fh => $state{fh},
-         ($scheme eq "https" ? (tls => "connect") : ());
+      $state{connect_guard} = AnyEvent::Socket::tcp_connect $rhost, $rport, sub {
+         $state{fh} = shift
+            or return $cb->(undef, { Status => 599, Reason => "$!" });
 
-      # limit the number of persistent connections
-      if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
-         ++$KA_COUNT{$_[1]};
-         $state{handle}{ka_count_guard} = AnyEvent::Util::guard { --$KA_COUNT{$_[1]} };
-         $hdr{connection} = "keep-alive";
-         delete $hdr{connection}; # keep-alive not yet supported
-      } else {
-         delete $hdr{connection};
-      }
+         delete $state{connect_guard}; # reduce memory usage, save a tree
 
-      # (re-)configure handle
-      $state{handle}->timeout ($timeout);
-      $state{handle}->on_error (sub {
-         %state = ();
-         $cb->(undef, { Status => 599, Reason => "$!" });
-      });
-      $state{handle}->on_eof (sub {
-         %state = ();
-         $cb->(undef, { Status => 599, Reason => "unexpected end-of-file" });
-      });
+         # get handle
+         $state{handle} = new AnyEvent::Handle
+            fh => $state{fh},
+            ($scheme eq "https" ? (tls => "connect") : ());
 
-      # send request
-      $state{handle}->push_write (
-         "$method $rpath HTTP/1.0\015\012"
-         . (join "", map "$_: $hdr{$_}\015\012", keys %hdr)
-         . "\015\012"
-         . (delete $arg{body})
-      );
+         # limit the number of persistent connections
+         if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
+            ++$KA_COUNT{$_[1]};
+            $state{handle}{ka_count_guard} = AnyEvent::Util::guard { --$KA_COUNT{$_[1]} };
+            $hdr{connection} = "keep-alive";
+            delete $hdr{connection}; # keep-alive not yet supported
+         } else {
+            delete $hdr{connection};
+         }
 
-      %hdr = (); # reduce memory usage, save a kitten
+         # (re-)configure handle
+         $state{handle}->timeout ($timeout);
+         $state{handle}->on_error (sub {
+            %state = ();
+            $cb->(undef, { Status => 599, Reason => "$!" });
+         });
+         $state{handle}->on_eof (sub {
+            %state = ();
+            $cb->(undef, { Status => 599, Reason => "unexpected end-of-file" });
+         });
 
-      # status line
-      $state{handle}->push_read (line => qr/\015?\012/, sub {
-         $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) \s+ ([^\015\012]+)/ix
-            or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])" }));
-
-         my %hdr = ( # response headers
-            HTTPVersion => "\x00$1",
-            Status      => "\x00$2",
-            Reason      => "\x00$3",
+         # send request
+         $state{handle}->push_write (
+            "$method $rpath HTTP/1.0\015\012"
+            . (join "", map "$_: $hdr{$_}\015\012", keys %hdr)
+            . "\015\012"
+            . (delete $arg{body})
          );
 
-         # headers, could be optimized a bit
-         $state{handle}->unshift_read (line => qr/\015?\012\015?\012/, sub {
-            for ("$_[1]\012") {
-               # we support spaces in field names, as lotus domino
-               # creates them.
-               $hdr{lc $1} .= "\x00$2"
-                  while /\G
-                        ([^:\000-\037]+):
-                        [\011\040]*
-                        ((?: [^\015\012]+ | \015?\012[\011\040] )*)
-                        \015?\012
-                     /gxc;
+         %hdr = (); # reduce memory usage, save a kitten
 
-               /\G$/
-                 or return (%state = (), $cb->(undef, { Status => 599, Reason => "garbled response headers" }));
-            }
+         # status line
+         $state{handle}->push_read (line => qr/\015?\012/, sub {
+            $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) \s+ ([^\015\012]+)/ix
+               or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])" }));
 
-            substr $_, 0, 1, ""
-               for values %hdr;
+            my %hdr = ( # response headers
+               HTTPVersion => "\x00$1",
+               Status      => "\x00$2",
+               Reason      => "\x00$3",
+            );
 
-            my $finish = sub {
-               %state = ();
+            # headers, could be optimized a bit
+            $state{handle}->unshift_read (line => qr/\015?\012\015?\012/, sub {
+               for ("$_[1]\012") {
+                  # we support spaces in field names, as lotus domino
+                  # creates them.
+                  $hdr{lc $1} .= "\x00$2"
+                     while /\G
+                           ([^:\000-\037]+):
+                           [\011\040]*
+                           ((?: [^\015\012]+ | \015?\012[\011\040] )*)
+                           \015?\012
+                        /gxc;
 
-               # set-cookie processing
-               if ($arg{cookie_jar} && exists $hdr{"set-cookie"}) {
-                  for (split /\x00/, $hdr{"set-cookie"}) {
-                     my ($cookie, @arg) = split /;\s*/;
-                     my ($name, $value) = split /=/, $cookie, 2;
-                     my %kv = (value => $value, map { split /=/, $_, 2 } @arg);
- 
-                     my $cdom  = (delete $kv{domain}) || $uhost;
-                     my $cpath = (delete $kv{path})   || "/";
- 
-                     $cdom =~ s/^.?/./; # make sure it starts with a "."
- 
-                     my $ndots = $cdom =~ y/.//;
-                     next if $ndots < ($cdom =~ /[^.]{3}$/ ? 2 : 3);
- 
-                     # store it
-                     $arg{cookie_jar}{version} = 1;
-                     $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
+                  /\G$/
+                    or return (%state = (), $cb->(undef, { Status => 599, Reason => "garbled response headers" }));
+               }
+
+               substr $_, 0, 1, ""
+                  for values %hdr;
+
+               my $finish = sub {
+                  %state = ();
+
+                  # set-cookie processing
+                  if ($arg{cookie_jar} && exists $hdr{"set-cookie"}) {
+                     for (split /\x00/, $hdr{"set-cookie"}) {
+                        my ($cookie, @arg) = split /;\s*/;
+                        my ($name, $value) = split /=/, $cookie, 2;
+                        my %kv = (value => $value, map { split /=/, $_, 2 } @arg);
+    
+                        my $cdom  = (delete $kv{domain}) || $uhost;
+                        my $cpath = (delete $kv{path})   || "/";
+    
+                        $cdom =~ s/^.?/./; # make sure it starts with a "."
+
+                        next if $cdom =~ /\.$/;
+    
+                        # this is not rfc-like and not netscape-like. go figure.
+                        my $ndots = $cdom =~ y/.//;
+                        next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
+    
+                        # store it
+                        $arg{cookie_jar}{version} = 1;
+                        $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
+                     }
+                  }
+
+                  if ($_[1]{Status} =~ /^x30[12]$/ && $recurse) {
+                     # microsoft and other assholes don't give a shit for following standards,
+                     # try to support a common form of broken Location header.
+                     $_[1]{location} =~ s%^/%$scheme://$uhost:$uport/%;
+
+                     http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+                  } else {
+                     $cb->($_[0], $_[1]);
+                  }
+               };
+
+               if ($hdr{Status} =~ /^(?:1..|204|304)$/ or $method eq "HEAD") {
+                  $finish->(undef, \%hdr);
+               } else {
+                  if (exists $hdr{"content-length"}) {
+                     $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
+                        # could cache persistent connection now
+                        if ($hdr{connection} =~ /\bkeep-alive\b/i) {
+                           # but we don't, due to misdesigns, this is annoyingly complex
+                        };
+
+                        $finish->($_[1], \%hdr);
+                     });
+                  } else {
+                     # too bad, need to read until we get an error or EOF,
+                     # no way to detect winged data.
+                     $_[0]->on_error (sub {
+                        $finish->($_[0]{rbuf}, \%hdr);
+                     });
+                     $_[0]->on_eof (undef);
+                     $_[0]->on_read (sub { });
                   }
                }
-
-               if ($_[1]{Status} =~ /^x30[12]$/ && $recurse) {
-                  # microsoft and other assholes don't give a shit for following standards,
-                  # try to support a common form of broken Location header.
-                  $_[1]{location} =~ s%^/%$scheme://$uhost:$uport/%;
-
-                  http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
-               } else {
-                  $cb->($_[0], $_[1]);
-               }
-            };
-
-            if ($hdr{Status} =~ /^(?:1..|204|304)$/ or $method eq "HEAD") {
-               $finish->(undef, \%hdr);
-            } else {
-               if (exists $hdr{"content-length"}) {
-                  $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
-                     # could cache persistent connection now
-                     if ($hdr{connection} =~ /\bkeep-alive\b/i) {
-                        # but we don't, due to misdesigns, this is annoyingly complex
-                     };
-
-                     $finish->($_[1], \%hdr);
-                  });
-               } else {
-                  # too bad, need to read until we get an error or EOF,
-                  # no way to detect winged data.
-                  $_[0]->on_error (sub {
-                     $finish->($_[0]{rbuf}, \%hdr);
-                  });
-                  $_[0]->on_eof (undef);
-                  $_[0]->on_read (sub { });
-               }
-            }
+            });
          });
-      });
-   }, sub {
-      $timeout
+      }, sub {
+         $timeout
+      };
    };
 
    defined wantarray && AnyEvent::Util::guard { %state = () }
