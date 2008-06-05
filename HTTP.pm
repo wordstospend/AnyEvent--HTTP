@@ -246,6 +246,8 @@ sub http_request($$$;@) {
              : $scheme eq "https" ? 443
              : return $cb->(undef, { Status => 599, Reason => "only http and https URL schemes supported" });
 
+   $hdr{referer} ||= "$scheme://$authority$upath"; # leave out fragment and query string, just a heuristic
+
    $authority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
       or return $cb->(undef, { Status => 599, Reason => "unparsable URL" });
 
@@ -256,8 +258,6 @@ sub http_request($$$;@) {
    $upath .= "?$query" if length $query;
 
    $upath =~ s%^/?%/%;
-
-   $hdr{referer} ||= "$scheme://$authority$upath";
 
    # cookie processing
    if (my $jar = $arg{cookie_jar}) {
@@ -402,7 +402,7 @@ sub http_request($$$;@) {
                      }
                   }
 
-                  if ($_[1]{Status} =~ /^x30[12]$/ && $recurse) {
+                  if ($_[1]{Status} =~ /^30[12]$/ && $recurse) {
                      # microsoft and other assholes don't give a shit for following standards,
                      # try to support a common form of broken Location header.
                      $_[1]{location} =~ s%^/%$scheme://$uhost:$uport/%;
