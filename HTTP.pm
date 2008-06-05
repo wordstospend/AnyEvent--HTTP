@@ -76,7 +76,8 @@ response headers as second argument.
 All the headers in that hash are lowercased. In addition to the response
 headers, the three "pseudo-headers" C<HTTPVersion>, C<Status> and
 C<Reason> contain the three parts of the HTTP Status-Line of the same
-name.
+name. If the server sends a header multiple lines, then their contents
+will be joined together with C<\x00>.
 
 If an internal error occurs, such as not being able to resolve a hostname,
 then C<$data> will be C<undef>, C<< $headers->{Status} >> will be C<599>
@@ -126,6 +127,22 @@ HTTPS.
 The request body, usually empty. Will be-sent as-is (future versions of
 this module might offer more options).
 
+=item cookie_jar => $hash_ref
+
+Passing this parameter enables (simplified) cookie-processing, loosely
+based on the original netscape specification.
+
+The C<$hash_ref> must be an (initially empty) hash reference which will
+get updated automatically. It is possible to save the cookie_jar to
+persistent storage with something like JSON or Storable, but this is not
+recommended, as expire times are currently being ignored.
+
+Note that this cookie implementation is not of very high quality, nor
+meant to be complete. If you want complete cookie management you have to
+do that on your own. C<cookie_jar> is meant as a quick fix to get some
+cookie-using sites working. Cookies are a privacy disaster, do not use
+them unless required to.
+
 =back
 
 Example: make a simple HTTP GET request for http://www.nethype.de/
@@ -174,40 +191,65 @@ sub http_request($$$;@) {
 
    $hdr{"user-agent"} ||= $USERAGENT;
 
-   my ($host, $port, $path, $scheme);
-
-   if ($proxy) {
-      ($host, $port, $scheme) = @$proxy;
-      $path = $url;
-   } else {
-      ($scheme, my $authority, $path, my $query, my $fragment) =
-         $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?|;
-
-      $port = $scheme eq "http"  ?  80
-            : $scheme eq "https" ? 443
-            : return $cb->(undef, { Status => 599, Reason => "$url: only http and https URLs supported" });
-
-      $authority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
-         or return $cb->(undef, { Status => 599, Reason => "$url: unparsable URL" });
-
-      $host = $1;
-      $port = $2 if defined $2;
-
-      $host =~ s/^\[(.*)\]$/$1/;
-      $path .= "?$query" if length $query;
-
-      $path = "/" unless $path;
-
-      $hdr{host} = $host = lc $host;
-   }
+   my ($scheme, $authority, $upath, $query, $fragment) =
+      $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?|;
 
    $scheme = lc $scheme;
 
-   my %state;
+   my $uport = $scheme eq "http"  ?  80
+             : $scheme eq "https" ? 443
+             : return $cb->(undef, { Status => 599, Reason => "only http and https URL schemes supported" });
+
+   $authority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
+      or return $cb->(undef, { Status => 599, Reason => "unparsable URL" });
+
+   my $uhost = $1;
+   $uport = $2 if defined $2;
+
+   $uhost =~ s/^\[(.*)\]$/$1/;
+   $upath .= "?$query" if length $query;
+
+   $upath =~ s%^/?%/%;
+
+   # cookie processing
+   if (my $jar = $arg{cookie_jar}) {
+      %$jar = () if $jar->{version} < 1;
+ 
+      my @cookie;
+ 
+      while (my ($chost, $v) = each %$jar) {
+         next unless $chost eq substr $uhost, -length $chost;
+         next unless $chost =~ /^\./;
+ 
+         while (my ($cpath, $v) = each %$v) {
+            next unless $cpath eq substr $upath, 0, length $cpath;
+ 
+            while (my ($k, $v) = each %$v) {
+               next if $scheme ne "https" && exists $v->{secure};
+               push @cookie, "$k=$v->{value}";
+            }
+         }
+      }
+ 
+      $hdr{cookie} = join "; ", @cookie
+         if @cookie;
+   }
+
+   my ($rhost, $rport, $rpath); # request host, port, path
+
+   if ($proxy) {
+      ($rhost, $rport, $scheme) = @$proxy;
+      $rpath = $url;
+   } else {
+      ($rhost, $rport, $rpath) = ($uhost, $uport, $upath);
+      $hdr{host} = $uhost;
+   }
 
    $hdr{"content-length"} = length $arg{body};
 
-   $state{connect_guard} = AnyEvent::Socket::tcp_connect $host, $port, sub {
+   my %state;
+
+   $state{connect_guard} = AnyEvent::Socket::tcp_connect $rhost, $rport, sub {
       $state{fh} = shift
          or return $cb->(undef, { Status => 599, Reason => "$!" });
 
@@ -241,7 +283,7 @@ sub http_request($$$;@) {
 
       # send request
       $state{handle}->push_write (
-         "$method $path HTTP/1.0\015\012"
+         "$method $rpath HTTP/1.0\015\012"
          . (join "", map "$_: $hdr{$_}\015\012", keys %hdr)
          . "\015\012"
          . (delete $arg{body})
@@ -255,9 +297,9 @@ sub http_request($$$;@) {
             or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])" }));
 
          my %hdr = ( # response headers
-            HTTPVersion => ",$1",
-            Status      => ",$2",
-            Reason      => ",$3",
+            HTTPVersion => "\x00$1",
+            Status      => "\x00$2",
+            Reason      => "\x00$3",
          );
 
          # headers, could be optimized a bit
@@ -265,7 +307,7 @@ sub http_request($$$;@) {
             for ("$_[1]\012") {
                # we support spaces in field names, as lotus domino
                # creates them.
-               $hdr{lc $1} .= ",$2"
+               $hdr{lc $1} .= "\x00$2"
                   while /\G
                         ([^:\000-\037]+):
                         [\011\040]*
@@ -274,14 +316,41 @@ sub http_request($$$;@) {
                      /gxc;
 
                /\G$/
-                 or return $cb->(undef, { Status => 599, Reason => "garbled response headers" });
+                 or return (%state = (), $cb->(undef, { Status => 599, Reason => "garbled response headers" }));
             }
 
             substr $_, 0, 1, ""
                for values %hdr;
 
             my $finish = sub {
-               if ($_[1]{Status} =~ /^30[12]$/ && $recurse) {
+               %state = ();
+
+               # set-cookie processing
+               if ($arg{cookie_jar} && exists $hdr{"set-cookie"}) {
+                  for (split /\x00/, $hdr{"set-cookie"}) {
+                     my ($cookie, @arg) = split /;\s*/;
+                     my ($name, $value) = split /=/, $cookie, 2;
+                     my %kv = (value => $value, map { split /=/, $_, 2 } @arg);
+ 
+                     my $cdom  = (delete $kv{domain}) || $uhost;
+                     my $cpath = (delete $kv{path})   || "/";
+ 
+                     $cdom =~ s/^.?/./; # make sure it starts with a "."
+ 
+                     my $ndots = $cdom =~ y/.//;
+                     next if $ndots < ($cdom =~ /[^.]{3}$/ ? 2 : 3);
+ 
+                     # store it
+                     $arg{cookie_jar}{version} = 1;
+                     $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
+                  }
+               }
+
+               if ($_[1]{Status} =~ /^x30[12]$/ && $recurse) {
+                  # microsoft and other assholes don't give a shit for following standards,
+                  # try to support a common form of broken Location header.
+                  $_[1]{location} =~ s%^/%$scheme://$uhost:$uport/%;
+
                   http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
                } else {
                   $cb->($_[0], $_[1]);
@@ -289,7 +358,6 @@ sub http_request($$$;@) {
             };
 
             if ($hdr{Status} =~ /^(?:1..|204|304)$/ or $method eq "HEAD") {
-               %state = ();
                $finish->(undef, \%hdr);
             } else {
                if (exists $hdr{"content-length"}) {
@@ -299,14 +367,12 @@ sub http_request($$$;@) {
                         # but we don't, due to misdesigns, this is annoyingly complex
                      };
 
-                     %state = ();
                      $finish->($_[1], \%hdr);
                   });
                } else {
                   # too bad, need to read until we get an error or EOF,
                   # no way to detect winged data.
                   $_[0]->on_error (sub {
-                     %state = ();
                      $finish->($_[0]{rbuf}, \%hdr);
                   });
                   $_[0]->on_eof (undef);
