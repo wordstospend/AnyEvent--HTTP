@@ -61,6 +61,7 @@ our $MAX_PERSISTENT_PER_HOST = 2;
 our $MAX_PER_HOST       = 4;
 
 our $PROXY;
+our $ACTIVE = 0;
 
 my %KA_COUNT; # number of open keep-alive connections per host
 my %CO_SLOT;  # number of open connections, and wait queue, per host
@@ -193,8 +194,10 @@ sub _slot_schedule($) {
       if (my $cb = shift @{ $CO_SLOT{$host}[1] }) {
          # somebody wants that slot
          ++$CO_SLOT{$host}[0];
+         ++$ACTIVE;
 
          $cb->(AnyEvent::Util::guard {
+            --$ACTIVE;
             --$CO_SLOT{$host}[0];
             _slot_schedule $host;
          });
@@ -326,8 +329,9 @@ sub http_request($$$;@) {
          # (re-)configure handle
          $state{handle}->timeout ($timeout);
          $state{handle}->on_error (sub {
+            my $errno = "$!";
             %state = ();
-            $cb->(undef, { Status => 599, Reason => "$!" });
+            $cb->(undef, { Status => 599, Reason => $errno });
          });
          $state{handle}->on_eof (sub {
             %state = ();
@@ -491,6 +495,12 @@ Not implemented currently.
 The maximum time to cache a persistent connection, in seconds (default: 2).
 
 Not implemented currently.
+
+=item $AnyEvent::HTTP::ACTIVE
+
+The number of active connections. This is not the number of currently
+running requests, but the number of currently open and non-idle TCP
+connections. This number of can be useful for load-leveling.
 
 =back
 
