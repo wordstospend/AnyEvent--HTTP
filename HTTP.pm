@@ -123,7 +123,9 @@ retries and so on, and how often to do so.
 
 =item headers => hashref
 
-The request headers to use.
+The request headers to use. Currently, C<http_request> may provide its
+own C<Host:>, C<Content-Length:>, C<Connection:> and C<Cookie:> headers
+and will provide defaults for C<User-Agent:> and C<Referer:>.
 
 =item timeout => $seconds
 
@@ -183,12 +185,13 @@ timeout of 30 seconds.
 
 =cut
 
+sub _slot_schedule;
 sub _slot_schedule($) {
    my $host = shift;
 
    while ($CO_SLOT{$host}[0] < $MAX_PER_HOST) {
       if (my $cb = shift @{ $CO_SLOT{$host}[1] }) {
-         # somebody wnats that slot
+         # somebody wants that slot
          ++$CO_SLOT{$host}[0];
 
          $cb->(AnyEvent::Util::guard {
@@ -198,7 +201,6 @@ sub _slot_schedule($) {
       } else {
          # nobody wants the slot, maybe we can forget about it
          delete $CO_SLOT{$host} unless $CO_SLOT{$host}[0];
-         warn "$host deleted" unless $CO_SLOT{$host}[0];#d#
          last;
       }
    }
@@ -254,6 +256,8 @@ sub http_request($$$;@) {
    $upath .= "?$query" if length $query;
 
    $upath =~ s%^/?%/%;
+
+   $hdr{referer} ||= "$scheme://$authority$upath";
 
    # cookie processing
    if (my $jar = $arg{cookie_jar}) {
