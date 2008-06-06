@@ -6,6 +6,10 @@ AnyEvent::HTTP - simple but non-blocking HTTP/HTTPS client
 
    use AnyEvent::HTTP;
 
+   http_get "http://www.nethype.de/", sub { print $_[1] };
+
+   # ... do something else here
+
 =head1 DESCRIPTION
 
 This module is an L<AnyEvent> user, you need to make sure that you use and
@@ -48,7 +52,7 @@ use base Exporter::;
 
 our $VERSION = '1.01';
 
-our @EXPORT = qw(http_get http_request);
+our @EXPORT = qw(http_get http_post http_head http_request);
 
 our $USERAGENT          = "Mozilla/5.0 (compatible; AnyEvent::HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)";
 our $MAX_RECURSE        =  10;
