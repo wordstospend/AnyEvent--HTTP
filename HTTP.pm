@@ -523,8 +523,8 @@ L<AnyEvent>.
 
 =head1 AUTHOR
 
- Marc Lehmann <schmorp@schmorp.de>
- http://home.schmorp.de/
+   Marc Lehmann <schmorp@schmorp.de>
+   http://home.schmorp.de/
 
 =cut
 
