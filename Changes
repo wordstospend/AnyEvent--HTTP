@@ -1,4 +1,7 @@
 Revision history for AnyEvent::HTTP
 
+1.1
+        - fixed prototypes for http_* functions
+
 1.0  Thu Jun  5 20:41:43 CEST 2008
 	- original version, an AnyEvent::AIO clone.

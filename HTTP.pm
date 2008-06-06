@@ -46,7 +46,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.0';
+our $VERSION = '1.1';
 
 our @EXPORT = qw(http_get http_request);
 
@@ -216,7 +216,7 @@ sub _get_slot($$) {
    _slot_schedule $_[0];
 }
 
-sub http_request($$$;@) {
+sub http_request($$@) {
    my $cb = pop;
    my ($method, $url, %arg) = @_;
 
@@ -449,17 +449,17 @@ sub http_request($$$;@) {
    defined wantarray && AnyEvent::Util::guard { %state = () }
 }
 
-sub http_get($$;@) {
+sub http_get($@) {
    unshift @_, "GET";
    &http_request
 }
 
-sub http_head($$;@) {
+sub http_head($@) {
    unshift @_, "HEAD";
    &http_request
 }
 
-sub http_post($$$;@) {
+sub http_post($$@) {
    unshift @_, "POST", "body";
    &http_request
 }
