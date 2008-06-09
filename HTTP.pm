@@ -95,10 +95,13 @@ The callback will be called with the response data as first argument
 response headers as second argument.
 
 All the headers in that hash are lowercased. In addition to the response
-headers, the three "pseudo-headers" C<HTTPVersion>, C<Status> and
-C<Reason> contain the three parts of the HTTP Status-Line of the same
-name. If the server sends a header multiple lines, then their contents
-will be joined together with C<\x00>.
+headers, the "pseudo-headers" C<HTTPVersion>, C<Status> and C<Reason>
+contain the three parts of the HTTP Status-Line of the same name. The
+pseudo-header C<URL> contains the original URL (which can differ from the
+requested URL when following redirects).
+
+If the server sends a header multiple lines, then their contents will be
+joined together with C<\x00>.
 
 If an internal error occurs, such as not being able to resolve a hostname,
 then C<$data> will be C<undef>, C<< $headers->{Status} >> will be C<599>
