@@ -236,7 +236,7 @@ sub http_request($$@) {
 
    my $recurse = exists $arg{recurse} ? $arg{recurse} : $MAX_RECURSE;
 
-   return $cb->(undef, { Status => 599, Reason => "recursion limit reached" })
+   return $cb->(undef, { Status => 599, Reason => "recursion limit reached", URL => $url })
       if $recurse < 0;
 
    my $proxy   = $arg{proxy}   || $PROXY;
@@ -251,12 +251,12 @@ sub http_request($$@) {
 
    my $uport = $scheme eq "http"  ?  80
              : $scheme eq "https" ? 443
-             : return $cb->(undef, { Status => 599, Reason => "only http and https URL schemes supported" });
+             : return $cb->(undef, { Status => 599, Reason => "only http and https URL schemes supported", URL => $url });
 
    $hdr{referer} ||= "$scheme://$authority$upath"; # leave out fragment and query string, just a heuristic
 
    $authority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
-      or return $cb->(undef, { Status => 599, Reason => "unparsable URL" });
+      or return $cb->(undef, { Status => 599, Reason => "unparsable URL", URL => $url });
 
    my $uhost = $1;
    $uport = $2 if defined $2;
@@ -311,7 +311,7 @@ sub http_request($$@) {
 
       $state{connect_guard} = AnyEvent::Socket::tcp_connect $rhost, $rport, sub {
          $state{fh} = shift
-            or return $cb->(undef, { Status => 599, Reason => "$!" });
+            or return $cb->(undef, { Status => 599, Reason => "$!", URL => $url });
 
          delete $state{connect_guard}; # reduce memory usage, save a tree
 
@@ -335,11 +335,11 @@ sub http_request($$@) {
          $state{handle}->on_error (sub {
             my $errno = "$!";
             %state = ();
-            $cb->(undef, { Status => 599, Reason => $errno });
+            $cb->(undef, { Status => 599, Reason => $errno, URL => $url });
          });
          $state{handle}->on_eof (sub {
             %state = ();
-            $cb->(undef, { Status => 599, Reason => "unexpected end-of-file" });
+            $cb->(undef, { Status => 599, Reason => "unexpected end-of-file", URL => $url });
          });
 
          # send request
@@ -355,12 +355,13 @@ sub http_request($$@) {
          # status line
          $state{handle}->push_read (line => qr/\015?\012/, sub {
             $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) \s+ ([^\015\012]+)/ix
-               or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])" }));
+               or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])", URL => $url }));
 
             my %hdr = ( # response headers
                HTTPVersion => "\x00$1",
                Status      => "\x00$2",
                Reason      => "\x00$3",
+               URL         => "\x00$url"
             );
 
             # headers, could be optimized a bit
@@ -377,7 +378,7 @@ sub http_request($$@) {
                         /gxc;
 
                   /\G$/
-                    or return (%state = (), $cb->(undef, { Status => 599, Reason => "garbled response headers" }));
+                    or return (%state = (), $cb->(undef, { Status => 599, Reason => "garbled response headers", URL => $url }));
                }
 
                substr $_, 0, 1, ""
