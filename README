@@ -4,6 +4,10 @@ NAME
 SYNOPSIS
        use AnyEvent::HTTP;
 
+       http_get "http://www.nethype.de/", sub { print $_[1] };
+
+       # ... do something else here
+
 DESCRIPTION
     This module is an AnyEvent user, you need to make sure that you use and
     run a supported event loop.
@@ -45,10 +49,13 @@ DESCRIPTION
         with response headers as second argument.
 
         All the headers in that hash are lowercased. In addition to the
-        response headers, the three "pseudo-headers" "HTTPVersion", "Status"
-        and "Reason" contain the three parts of the HTTP Status-Line of the
-        same name. If the server sends a header multiple lines, then their
-        contents will be joined together with "\x00".
+        response headers, the "pseudo-headers" "HTTPVersion", "Status" and
+        "Reason" contain the three parts of the HTTP Status-Line of the same
+        name. The pseudo-header "URL" contains the original URL (which can
+        differ from the requested URL when following redirects).
+
+        If the server sends a header multiple lines, then their contents
+        will be joined together with "\x00".
 
         If an internal error occurs, such as not being able to resolve a
         hostname, then $data will be "undef", "$headers->{Status}" will be
@@ -168,6 +175,6 @@ SEE ALSO
     AnyEvent.
 
 AUTHOR
-     Marc Lehmann <schmorp@schmorp.de>
-     http://home.schmorp.de/
+       Marc Lehmann <schmorp@schmorp.de>
+       http://home.schmorp.de/
 
