@@ -50,7 +50,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.02';
+our $VERSION = '1.03';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -468,7 +468,8 @@ sub http_head($@) {
 }
 
 sub http_post($$@) {
-   unshift @_, "POST", "body";
+   my $url = shift;
+   unshift @_, "POST", $url, "body";
    &http_request
 }
 
