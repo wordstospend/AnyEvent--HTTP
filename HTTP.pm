@@ -414,19 +414,21 @@ sub http_request($$@) {
                      }
                   }
 
-                  if ($_[1]{Status} =~ /^30[12]$/ && $recurse && $method ne "POST") {
-                     # microsoft and other assholes don't give a shit for following standards,
-                     # try to support a common form of broken Location header.
-                     $_[1]{location} =~ s%^/%$scheme://$uhost:$uport/%;
+                  # microsoft and other assholes don't give a shit for following standards,
+                  # try to support a common form of broken Location header.
+                  $_[1]{location} =~ s%^/%$scheme://$uhost:$uport/%
+                     if exists $_[1]{location};
 
+                  if ($_[1]{Status} =~ /^30[12]$/ && $recurse && $method ne "POST") {
                      # apparently, mozilla et al. just change POST to GET here
                      # more research is needed before we do the same
-
                      http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
                   } elsif ($_[1]{Status} == 303 && $recurse) {
-                     $_[1]{location} =~ s%^/%$scheme://$uhost:$uport/%;
-
-                     http_request (GET => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+                     # even http/1.1 is unlear on how to mutate the method
+                     $method = "GET" unless $method eq "HEAD";
+                     http_request ($method => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+                  } elsif ($_[1]{Status} == 307 && $recurse && $method =~ /^(?:GET|HEAD)$/) {
+                     http_request ($method => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
                   } else {
                      $cb->($_[0], $_[1]);
                   }
