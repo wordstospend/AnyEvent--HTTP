@@ -1,9 +1,10 @@
 Revision history for AnyEvent::HTTP
 
-1.03
+1.03 Thu Jul  3 03:47:58 CEST 2008
 	- fix http_post, which was totally broken (patch by Pedro Melo).
-        - do not recurse on POST requests, as per HTTP/1.0.
-        - implement 303/307 redirects.
+        - do not recurse on POST requests, as per HTTP/1.[01] (this might
+          change as the recommendation isn't followed by anybody else).
+        - implement preliminary support for 303/307 redirects.
 
 1.02 Thu Jun 12 13:50:08 CEST 2008
         - make the request URL available in the callback of http_request.
