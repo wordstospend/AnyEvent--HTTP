@@ -1,5 +1,8 @@
 Revision history for AnyEvent::HTTP
 
+        - parse reason-less http status responses.
+	- parse more forms of broken location headers.
+
 1.03 Thu Jul  3 03:47:58 CEST 2008
 	- fix http_post, which was totally broken (patch by Pedro Melo).
         - do not recurse on POST requests, as per HTTP/1.[01] (this might
