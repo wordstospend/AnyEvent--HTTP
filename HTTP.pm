@@ -82,7 +82,7 @@ additional parameters.
 
 =item http_post $url, $body, key => value..., $cb->($data, $headers)
 
-Executes an HTTP-POST request with a request body of C<$bod>. See the
+Executes an HTTP-POST request with a request body of C<$body>. See the
 http_request function for details on additional parameters.
 
 =item http_request $method => $url, key => value..., $cb->($data, $headers)
