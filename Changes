@@ -1,5 +1,9 @@
 Revision history for AnyEvent::HTTP
 
+1.05 Mon Sep 29 15:49:58 CEST 2008
+	- fix a regex when parsing cookie domains
+          (patch by Дмитрий Шалашов).
+
 1.04 Thu Jul 24 08:00:46 CEST 2008
         - parse reason-less http status responses.
 	- parse more forms of broken location headers.

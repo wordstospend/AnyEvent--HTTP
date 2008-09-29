@@ -50,7 +50,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.04';
+our $VERSION = '1.05';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -400,7 +400,7 @@ sub http_request($$@) {
                         my $cdom  = (delete $kv{domain}) || $uhost;
                         my $cpath = (delete $kv{path})   || "/";
     
-                        $cdom =~ s/^.?/./; # make sure it starts with a "."
+                        $cdom =~ s/^\.?/./; # make sure it starts with a "."
 
                         next if $cdom =~ /\.$/;
     
