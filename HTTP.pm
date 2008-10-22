@@ -73,22 +73,28 @@ my %CO_SLOT;  # number of open connections, and wait queue, per host
 =item http_get $url, key => value..., $cb->($data, $headers)
 
 Executes an HTTP-GET request. See the http_request function for details on
-additional parameters.
+additional parameters and the return value.
 
 =item http_head $url, key => value..., $cb->($data, $headers)
 
-Executes an HTTP-HEAD request. See the http_request function for details on
-additional parameters.
+Executes an HTTP-HEAD request. See the http_request function for details
+on additional parameters and the return value.
 
 =item http_post $url, $body, key => value..., $cb->($data, $headers)
 
 Executes an HTTP-POST request with a request body of C<$body>. See the
-http_request function for details on additional parameters.
+http_request function for details on additional parameters and the return
+value.
 
 =item http_request $method => $url, key => value..., $cb->($data, $headers)
 
 Executes a HTTP request of type C<$method> (e.g. C<GET>, C<POST>). The URL
 must be an absolute http or https URL.
+
+When called in void context, nothing is returned. In other contexts,
+C<http_request> returns a "cancellation guard" - you have to keep the
+object at least alive until the callback get called. If the object gets
+destroyed before the callbakc is called, the request will be cancelled.
 
 The callback will be called with the response data as first argument
 (or C<undef> if it wasn't available due to errors), and a hash-ref with
@@ -190,6 +196,16 @@ timeout of 30 seconds.
          print Dumper $hdr;
       }
    ;
+
+Example: make another simple HTTP GET request, but immediately try to
+cancel it.
+
+   my $request = http_request GET => "http://www.nethype.de/", sub {
+      my ($body, $hdr) = @_;
+      print "$body\n";
+   };
+
+   undef $request;
 
 =cut
 
