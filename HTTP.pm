@@ -292,8 +292,13 @@ sub http_request($$@) {
       my @cookie;
  
       while (my ($chost, $v) = each %$jar) {
-         next unless $chost eq substr $uhost, -length $chost;
-         next unless $chost =~ /^\./;
+         if ($chost =~ /^\./) {
+            next unless $chost eq substr $uhost, -length $chost;
+         } elsif ($chost =~ /\./) {
+            next unless $chost eq $uhost;
+         } else {
+            next;
+         }
  
          while (my ($cpath, $v) = each %$v) {
             next unless $cpath eq substr $upath, 0, length $cpath;
@@ -387,7 +392,8 @@ sub http_request($$@) {
             $state{handle}->unshift_read (line => qr/\015?\012\015?\012/, sub {
                for ("$_[1]\012") {
                   # we support spaces in field names, as lotus domino
-                  # creates them.
+                  # creates them (actually spaces around seperators
+                  # are strictly allowed in http, they are a security issue).
                   $hdr{lc $1} .= "\x00$2"
                      while /\G
                            ([^:\000-\037]+):
@@ -404,6 +410,10 @@ sub http_request($$@) {
                   for values %hdr;
 
                my $finish = sub {
+                  # TODO: use destroy method, when/if available
+                  #$state{handle}->destroy;
+                  $state{handle}->on_eof   (undef);
+                  $state{handle}->on_error (undef);
                   %state = ();
 
                   # set-cookie processing
@@ -413,16 +423,22 @@ sub http_request($$@) {
                         my ($name, $value) = split /=/, $cookie, 2;
                         my %kv = (value => $value, map { split /=/, $_, 2 } @arg);
     
-                        my $cdom  = (delete $kv{domain}) || $uhost;
+                        my $cdom;
                         my $cpath = (delete $kv{path})   || "/";
-    
-                        $cdom =~ s/^\.?/./; # make sure it starts with a "."
 
-                        next if $cdom =~ /\.$/;
+                        if (exists $kv{domain}) {
+                           $cdom = delete $kv{domain};
     
-                        # this is not rfc-like and not netscape-like. go figure.
-                        my $ndots = $cdom =~ y/.//;
-                        next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
+                           $cdom =~ s/^\.?/./; # make sure it starts with a "."
+
+                           next if $cdom =~ /\.$/;
+       
+                           # this is not rfc-like and not netscape-like. go figure.
+                           my $ndots = $cdom =~ y/.//;
+                           next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
+                        } else {
+                           $cdom = $uhost;
+                        }
     
                         # store it
                         $arg{cookie_jar}{version} = 1;
@@ -450,7 +466,7 @@ sub http_request($$@) {
                      # more research is needed before we do the same
                      http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
                   } elsif ($_[1]{Status} == 303 && $recurse) {
-                     # even http/1.1 is unlear on how to mutate the method
+                     # even http/1.1 is unclear on how to mutate the method
                      $method = "GET" unless $method eq "HEAD";
                      http_request ($method => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
                   } elsif ($_[1]{Status} == 307 && $recurse && $method =~ /^(?:GET|HEAD)$/) {

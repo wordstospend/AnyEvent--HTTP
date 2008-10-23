@@ -1,6 +1,9 @@
 Revision history for AnyEvent::HTTP
 
-TODO: fix cookies
+TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
+TODO: use destroy method, when/if available
+
+	- work around different behaviour of AnyEvent::Handle in TLS mode.
 	- cleanup cookie implementation, many examples and comments were
           provided by Дмитрий Шалашов.
         - document the return values of http_* functions better.
