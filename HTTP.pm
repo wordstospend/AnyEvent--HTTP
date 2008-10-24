@@ -106,8 +106,8 @@ contain the three parts of the HTTP Status-Line of the same name. The
 pseudo-header C<URL> contains the original URL (which can differ from the
 requested URL when following redirects).
 
-If the server sends a header multiple lines, then their contents will be
-joined together with a command (C<,>).
+If the server sends a header multiple times, then their contents will be
+joined together with a comma (C<,>), as per the HTTP spec.
 
 If an internal error occurs, such as not being able to resolve a hostname,
 then C<$data> will be C<undef>, C<< $headers->{Status} >> will be C<599>

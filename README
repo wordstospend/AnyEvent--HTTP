@@ -61,8 +61,8 @@ DESCRIPTION
         name. The pseudo-header "URL" contains the original URL (which can
         differ from the requested URL when following redirects).
 
-        If the server sends a header multiple lines, then their contents
-        will be joined together with "\x00".
+        If the server sends a header multiple times, then their contents
+        will be joined together with a comma (","), as per the HTTP spec.
 
         If an internal error occurs, such as not being able to resolve a
         hostname, then $data will be "undef", "$headers->{Status}" will be

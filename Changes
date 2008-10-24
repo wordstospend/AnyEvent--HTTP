@@ -7,6 +7,14 @@ TODO: use destroy method, when/if available
 	- cleanup cookie implementation, many examples and comments were
           provided by Дмитрий Шалашов.
         - document the return values of http_* functions better.
+        - separate multiple header values by "," not "\x00" (this does not
+          break correctly written users of the old API).
+        - improve Set-Cookie: parsing.
+        - add experimental https-over-http-proxy support.
+        - downgrade https-over-https proxy to https-over-http.
+        - ignore spurious CR characters in headers, they show up
+          in the weirdest of places.
+        - ucfirst the request headers, for a slightly less weird look.
 
 1.05 Mon Sep 29 15:49:58 CEST 2008
 	- fix a regex when parsing cookie domains
