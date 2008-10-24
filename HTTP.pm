@@ -107,7 +107,7 @@ pseudo-header C<URL> contains the original URL (which can differ from the
 requested URL when following redirects).
 
 If the server sends a header multiple lines, then their contents will be
-joined together with C<\x00>.
+joined together with a command (C<,>).
 
 If an internal error occurs, such as not being able to resolve a hostname,
 then C<$data> will be C<undef>, C<< $headers->{Status} >> will be C<599>
@@ -263,18 +263,18 @@ sub http_request($$@) {
 
    $hdr{"user-agent"} ||= $USERAGENT;
 
-   my ($scheme, $authority, $upath, $query, $fragment) =
+   my ($uscheme, $uauthority, $upath, $query, $fragment) =
       $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?|;
 
-   $scheme = lc $scheme;
+   $uscheme = lc $uscheme;
 
-   my $uport = $scheme eq "http"  ?  80
-             : $scheme eq "https" ? 443
+   my $uport = $uscheme eq "http"  ?  80
+             : $uscheme eq "https" ? 443
              : return $cb->(undef, { Status => 599, Reason => "only http and https URL schemes supported", URL => $url });
 
-   $hdr{referer} ||= "$scheme://$authority$upath"; # leave out fragment and query string, just a heuristic
+   $hdr{referer} ||= "$uscheme://$uauthority$upath"; # leave out fragment and query string, just a heuristic
 
-   $authority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
+   $uauthority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
       or return $cb->(undef, { Status => 599, Reason => "unparsable URL", URL => $url });
 
    my $uhost = $1;
@@ -287,7 +287,7 @@ sub http_request($$@) {
 
    # cookie processing
    if (my $jar = $arg{cookie_jar}) {
-      %$jar = () if $jar->{version} < 1;
+      %$jar = () if $jar->{version} != 1;
  
       my @cookie;
  
@@ -304,8 +304,10 @@ sub http_request($$@) {
             next unless $cpath eq substr $upath, 0, length $cpath;
  
             while (my ($k, $v) = each %$v) {
-               next if $scheme ne "https" && exists $v->{secure};
-               push @cookie, "$k=$v->{value}";
+               next if $uscheme ne "https" && exists $v->{secure};
+               my $value = $v->{value};
+               $value =~ s/([\\"])/\\$1/g;
+               push @cookie, "$k=\"$value\"";
             }
          }
       }
@@ -314,16 +316,19 @@ sub http_request($$@) {
          if @cookie;
    }
 
-   my ($rhost, $rport, $rpath); # request host, port, path
+   my ($rhost, $rport, $rscheme, $rpath); # request host, port, path
 
    if ($proxy) {
-      ($rhost, $rport, $scheme) = @$proxy;
-      $rpath = $url;
+      ($rhost, $rport, $rscheme, $rpath) = (@$proxy, $url);
+
+      # don't support https requests over https-proxy transport,
+      # can't be done with tls as spec'ed.
+      $rscheme = "http" if $uscheme eq "https" && $rscheme eq "https";
    } else {
-      ($rhost, $rport, $rpath) = ($uhost, $uport, $upath);
-      $hdr{host} = $uhost;
+      ($rhost, $rport, $rscheme, $rpath) = ($uhost, $uport, $uscheme, $upath);
    }
 
+   $hdr{host} = $uhost;
    $hdr{"content-length"} = length $arg{body};
 
    my %state = (connect_guard => 1);
@@ -341,8 +346,7 @@ sub http_request($$@) {
 
          # get handle
          $state{handle} = new AnyEvent::Handle
-            fh => $state{fh},
-            ($scheme eq "https" ? (tls => "connect") : ());
+            fh => $state{fh};
 
          # limit the number of persistent connections
          if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
@@ -366,140 +370,192 @@ sub http_request($$@) {
             $cb->(undef, { Status => 599, Reason => "unexpected end-of-file", URL => $url });
          });
 
-         # send request
-         $state{handle}->push_write (
-            "$method $rpath HTTP/1.0\015\012"
-            . (join "", map "$_: $hdr{$_}\015\012", keys %hdr)
-            . "\015\012"
-            . (delete $arg{body})
-         );
+         $state{handle}->starttls ("connect") if $rscheme eq "https";
 
-         %hdr = (); # reduce memory usage, save a kitten
+         # handle actual, non-tunneled, request
+         my $handle_actual_request = sub {
+#            $state{handle}->starttls ("connect") if $uscheme eq "https";
 
-         # status line
-         $state{handle}->push_read (line => qr/\015?\012/, sub {
-            $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-               or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])", URL => $url }));
-
-            my %hdr = ( # response headers
-               HTTPVersion => "\x00$1",
-               Status      => "\x00$2",
-               Reason      => "\x00$3",
-               URL         => "\x00$url"
+            # send request
+            $state{handle}->push_write (
+               "$method $rpath HTTP/1.0\015\012"
+               . (join "", map "\u$_: $hdr{$_}\015\012", keys %hdr)
+               . "\015\012"
+               . (delete $arg{body})
             );
 
-            # headers, could be optimized a bit
-            $state{handle}->unshift_read (line => qr/\015?\012\015?\012/, sub {
-               for ("$_[1]\012") {
-                  # we support spaces in field names, as lotus domino
-                  # creates them (actually spaces around seperators
-                  # are strictly allowed in http, they are a security issue).
-                  $hdr{lc $1} .= "\x00$2"
-                     while /\G
-                           ([^:\000-\037]+):
-                           [\011\040]*
-                           ((?: [^\015\012]+ | \015?\012[\011\040] )*)
-                           \015?\012
-                        /gxc;
+            %hdr = (); # reduce memory usage, save a kitten
 
-                  /\G$/
-                    or return (%state = (), $cb->(undef, { Status => 599, Reason => "garbled response headers", URL => $url }));
-               }
+            # status line
+            $state{handle}->push_read (line => qr/\015?\012/, sub {
+               $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
+                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])", URL => $url }));
 
-               substr $_, 0, 1, ""
-                  for values %hdr;
+               my %hdr = ( # response headers
+                  HTTPVersion => ",$1",
+                  Status      => ",$2",
+                  Reason      => ",$3",
+                  URL         => ",$url"
+               );
 
-               my $finish = sub {
-                  # TODO: use destroy method, when/if available
-                  #$state{handle}->destroy;
-                  $state{handle}->on_eof   (undef);
-                  $state{handle}->on_error (undef);
-                  %state = ();
+               # headers, could be optimized a bit
+               $state{handle}->unshift_read (line => qr/\015?\012\015?\012/, sub {
+                  for ("$_[1]\012") {
+                     y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
-                  # set-cookie processing
-                  if ($arg{cookie_jar} && exists $hdr{"set-cookie"}) {
-                     for (split /\x00/, $hdr{"set-cookie"}) {
-                        my ($cookie, @arg) = split /;\s*/;
-                        my ($name, $value) = split /=/, $cookie, 2;
-                        my %kv = (value => $value, map { split /=/, $_, 2 } @arg);
-    
-                        my $cdom;
-                        my $cpath = (delete $kv{path})   || "/";
+                     # we support spaces in field names, as lotus domino
+                     # creates them (actually spaces around seperators
+                     # are strictly allowed in http, they are a security issue).
+                     $hdr{lc $1} .= ",$2"
+                        while /\G
+                              ([^:\000-\037]+):
+                              [\011\040]*
+                              ((?: [^\012]+ | \012[\011\040] )*)
+                              \012
+                           /gxc;
 
-                        if (exists $kv{domain}) {
-                           $cdom = delete $kv{domain};
-    
-                           $cdom =~ s/^\.?/./; # make sure it starts with a "."
+                     /\G$/
+                       or return (%state = (), $cb->(undef, { Status => 599, Reason => "garbled response headers", URL => $url }));
+                  }
 
-                           next if $cdom =~ /\.$/;
+                  substr $_, 0, 1, ""
+                     for values %hdr;
+
+                  my $finish = sub {
+                     # TODO: use destroy method, when/if available
+                     #$state{handle}->destroy;
+                     $state{handle}->on_eof   (undef);
+                     $state{handle}->on_error (undef);
+                     %state = ();
+
+                     # set-cookie processing
+                     if ($arg{cookie_jar}) {
+                        for ($hdr{"set-cookie"}) {
+                           # parse NAME=VALUE
+                           my @kv;
+
+                           while (/\G\s* ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )/gcxs) {
+                              my $name = $1;
+                              my $value = $3;
+
+                              unless ($value) {
+                                 $value = $2;
+                                 $value =~ s/\\(.)/$1/gs;
+                              }
+
+                              push @kv, $name => $value;
+
+                              last unless /\G\s*;/gc;
+                           }
+
+                           last unless @kv;
+
+                           my $name = shift @kv;
+                           my %kv = (value => shift @kv, @kv);
+
+                           my $cdom;
+                           my $cpath = (delete $kv{path}) || "/";
+
+                           if (exists $kv{domain}) {
+                              $cdom = delete $kv{domain};
        
-                           # this is not rfc-like and not netscape-like. go figure.
-                           my $ndots = $cdom =~ y/.//;
-                           next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
-                        } else {
-                           $cdom = $uhost;
+                              $cdom =~ s/^\.?/./; # make sure it starts with a "."
+
+                              next if $cdom =~ /\.$/;
+          
+                              # this is not rfc-like and not netscape-like. go figure.
+                              my $ndots = $cdom =~ y/.//;
+                              next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
+                           } else {
+                              $cdom = $uhost;
+                           }
+       
+                           # store it
+                           $arg{cookie_jar}{version} = 1;
+                           $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
+
+                           redo if /\G\s*,/gc;
                         }
-    
-                        # store it
-                        $arg{cookie_jar}{version} = 1;
-                        $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
-                     }
-                  }
-
-                  # microsoft and other shitheads don't give a shit for following standards,
-                  # try to support some common forms of broken Location headers.
-                  if ($_[1]{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
-                     $_[1]{location} =~ s/^\.\/+//;
-
-                     my $url = "$scheme://$uhost:$uport";
-
-                     unless ($_[1]{location} =~ s/^\///) {
-                        $url .= $upath;
-                        $url =~ s/\/[^\/]*$//;
                      }
 
-                     $_[1]{location} = "$url/$_[1]{location}";
-                  }
+                     # microsoft and other shitheads don't give a shit for following standards,
+                     # try to support some common forms of broken Location headers.
+                     if ($_[1]{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
+                        $_[1]{location} =~ s/^\.\/+//;
 
-                  if ($_[1]{Status} =~ /^30[12]$/ && $recurse && $method ne "POST") {
-                     # apparently, mozilla et al. just change POST to GET here
-                     # more research is needed before we do the same
-                     http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
-                  } elsif ($_[1]{Status} == 303 && $recurse) {
-                     # even http/1.1 is unclear on how to mutate the method
-                     $method = "GET" unless $method eq "HEAD";
-                     http_request ($method => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
-                  } elsif ($_[1]{Status} == 307 && $recurse && $method =~ /^(?:GET|HEAD)$/) {
-                     http_request ($method => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+                        my $url = "$rscheme://$uhost:$uport";
+
+                        unless ($_[1]{location} =~ s/^\///) {
+                           $url .= $upath;
+                           $url =~ s/\/[^\/]*$//;
+                        }
+
+                        $_[1]{location} = "$url/$_[1]{location}";
+                     }
+
+                     if ($_[1]{Status} =~ /^30[12]$/ && $recurse && $method ne "POST") {
+                        # apparently, mozilla et al. just change POST to GET here
+                        # more research is needed before we do the same
+                        http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+                     } elsif ($_[1]{Status} == 303 && $recurse) {
+                        # even http/1.1 is unclear on how to mutate the method
+                        $method = "GET" unless $method eq "HEAD";
+                        http_request ($method => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+                     } elsif ($_[1]{Status} == 307 && $recurse && $method =~ /^(?:GET|HEAD)$/) {
+                        http_request ($method => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+                     } else {
+                        $cb->($_[0], $_[1]);
+                     }
+                  };
+
+                  if ($hdr{Status} =~ /^(?:1..|204|304)$/ or $method eq "HEAD") {
+                     $finish->(undef, \%hdr);
                   } else {
-                     $cb->($_[0], $_[1]);
-                  }
-               };
+                     if (exists $hdr{"content-length"}) {
+                        $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
+                           # could cache persistent connection now
+                           if ($hdr{connection} =~ /\bkeep-alive\b/i) {
+                              # but we don't, due to misdesigns, this is annoyingly complex
+                           };
 
-               if ($hdr{Status} =~ /^(?:1..|204|304)$/ or $method eq "HEAD") {
-                  $finish->(undef, \%hdr);
+                           $finish->($_[1], \%hdr);
+                        });
+                     } else {
+                        # too bad, need to read until we get an error or EOF,
+                        # no way to detect winged data.
+                        $_[0]->on_error (sub {
+                           $finish->($_[0]{rbuf}, \%hdr);
+                        });
+                        $_[0]->on_eof (undef);
+                        $_[0]->on_read (sub { });
+                     }
+                  }
+               });
+            });
+         };
+
+         # now handle proxy-CONNECT method
+         if ($proxy && $uscheme eq "https") {
+            # oh dear, we have to wrap it into a connect request
+
+            # maybe re-use $uauthority with patched port?
+            $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012Host: $uhost\015\012\015\012");
+            $state{handle}->push_read (line => qr/\015?\012\015?\012/, sub {
+               $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
+                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid proxy connect response ($_[1])", URL => $url }));
+
+               if ($2 == 200) {
+                  $rpath = $upath;
+                  &$handle_actual_request;
                } else {
-                  if (exists $hdr{"content-length"}) {
-                     $_[0]->unshift_read (chunk => $hdr{"content-length"}, sub {
-                        # could cache persistent connection now
-                        if ($hdr{connection} =~ /\bkeep-alive\b/i) {
-                           # but we don't, due to misdesigns, this is annoyingly complex
-                        };
-
-                        $finish->($_[1], \%hdr);
-                     });
-                  } else {
-                     # too bad, need to read until we get an error or EOF,
-                     # no way to detect winged data.
-                     $_[0]->on_error (sub {
-                        $finish->($_[0]{rbuf}, \%hdr);
-                     });
-                     $_[0]->on_eof (undef);
-                     $_[0]->on_read (sub { });
-                  }
+                  %state = ();
+                  $cb->(undef, { Status => $2, Reason => $3, URL => $url });
                }
             });
-         });
+         } else {
+            &$handle_actual_request;
+         }
+
       }, sub {
          $timeout
       };
