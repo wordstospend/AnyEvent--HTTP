@@ -374,7 +374,7 @@ sub http_request($$@) {
 
          # handle actual, non-tunneled, request
          my $handle_actual_request = sub {
-#            $state{handle}->starttls ("connect") if $uscheme eq "https";
+            $state{handle}->starttls ("connect") if $uscheme eq "https";
 
             # send request
             $state{handle}->push_write (
