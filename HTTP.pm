@@ -239,6 +239,9 @@ sub _get_slot($$) {
    _slot_schedule $_[0];
 }
 
+our $qr_nl   = qr<\015?\012>;
+our $qr_nlnl = qr<\015?\012\015?\012>;
+
 sub http_request($$@) {
    my $cb = pop;
    my ($method, $url, %arg) = @_;
@@ -341,25 +344,28 @@ sub http_request($$@) {
       $state{connect_guard} = AnyEvent::Socket::tcp_connect $rhost, $rport, sub {
          $state{fh} = shift
             or return $cb->(undef, { Status => 599, Reason => "$!", URL => $url });
+         pop; # free memory, save a tree
 
-         delete $state{connect_guard}; # reduce memory usage, save a tree
+         return unless delete $state{connect_guard};
 
          # get handle
          $state{handle} = new AnyEvent::Handle
-            fh => $state{fh};
+            fh      => $state{fh},
+            timeout => $timeout;
 
          # limit the number of persistent connections
+         # keepalive not yet supported
          if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
             ++$KA_COUNT{$_[1]};
-            $state{handle}{ka_count_guard} = AnyEvent::Util::guard { --$KA_COUNT{$_[1]} };
+            $state{handle}{ka_count_guard} = AnyEvent::Util::guard {
+               --$KA_COUNT{$_[1]}
+            };
             $hdr{connection} = "keep-alive";
-            delete $hdr{connection}; # keep-alive not yet supported
          } else {
             delete $hdr{connection};
          }
 
          # (re-)configure handle
-         $state{handle}->timeout ($timeout);
          $state{handle}->on_error (sub {
             my $errno = "$!";
             %state = ();
@@ -374,7 +380,7 @@ sub http_request($$@) {
 
          # handle actual, non-tunneled, request
          my $handle_actual_request = sub {
-            $state{handle}->starttls ("connect") if $uscheme eq "https";
+            $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
 
             # send request
             $state{handle}->push_write (
@@ -387,7 +393,7 @@ sub http_request($$@) {
             %hdr = (); # reduce memory usage, save a kitten
 
             # status line
-            $state{handle}->push_read (line => qr/\015?\012/, sub {
+            $state{handle}->push_read (line => $qr_nl, sub {
                $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
                   or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])", URL => $url }));
 
@@ -399,7 +405,7 @@ sub http_request($$@) {
                );
 
                # headers, could be optimized a bit
-               $state{handle}->unshift_read (line => qr/\015?\012\015?\012/, sub {
+               $state{handle}->unshift_read (line => $qr_nlnl, sub {
                   for ("$_[1]\012") {
                      y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
@@ -540,7 +546,7 @@ sub http_request($$@) {
 
             # maybe re-use $uauthority with patched port?
             $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012Host: $uhost\015\012\015\012");
-            $state{handle}->push_read (line => qr/\015?\012\015?\012/, sub {
+            $state{handle}->push_read (line => $qr_nlnl, sub {
                $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
                   or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid proxy connect response ($_[1])", URL => $url }));
 
