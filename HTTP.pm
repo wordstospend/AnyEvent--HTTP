@@ -50,7 +50,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.05';
+our $VERSION = '1.1';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -428,10 +428,7 @@ sub http_request($$@) {
                      for values %hdr;
 
                   my $finish = sub {
-                     # TODO: use destroy method, when/if available
-                     #$state{handle}->destroy;
-                     $state{handle}->on_eof   (undef);
-                     $state{handle}->on_error (undef);
+                     $state{handle}->destroy;
                      %state = ();
 
                      # set-cookie processing

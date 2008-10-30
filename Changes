@@ -1,8 +1,8 @@
 Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
-TODO: use destroy method, when/if available
 
+1.1  Thu Oct 30 04:46:27 CET 2008
 	- work around different behaviour of AnyEvent::Handle in TLS mode.
 	- cleanup cookie implementation, many examples and comments were
           provided by Дмитрий Шалашов.
