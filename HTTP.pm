@@ -641,6 +641,9 @@ L<AnyEvent>.
    Marc Lehmann <schmorp@schmorp.de>
    http://home.schmorp.de/
 
+With many thanks to Дмитрий Шалашов, who provided countless
+testcases and bugreports.
+
 =cut
 
 1
