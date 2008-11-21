@@ -50,7 +50,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.1';
+our $VERSION = '1.11';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -527,7 +527,9 @@ sub http_request($$@) {
                         # too bad, need to read until we get an error or EOF,
                         # no way to detect winged data.
                         $_[0]->on_error (sub {
-                           $finish->($_[0]{rbuf}, \%hdr);
+                           # delete ought to be more efficient, as we would have to make
+                           # a copy otherwise as $_[0] gets destroyed.
+                           $finish->(delete $_[0]{rbuf}, \%hdr);
                         });
                         $_[0]->on_eof (undef);
                         $_[0]->on_read (sub { });
