@@ -2,6 +2,9 @@ Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 
+	- $scheme wasn't optional in the proxy specification (reported by
+          Felix Antonius Wilhelm Ostmann).
+
 1.11 Fri Nov 21 09:18:11 CET 2008
 	- work around a perl core bug not properly refcounting function arguments,
           causing "200 OK" with random body results (reported by Дмитрий Шалашов).
