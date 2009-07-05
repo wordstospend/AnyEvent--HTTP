@@ -43,7 +43,7 @@ no warnings;
 
 use Carp;
 
-use AnyEvent ();
+use AnyEvent 4.452 ();
 use AnyEvent::Util ();
 use AnyEvent::Socket ();
 use AnyEvent::Handle ();
@@ -54,7 +54,7 @@ our $VERSION = '1.12';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
-our $USERAGENT          = "Mozilla/5.0 (compatible; AnyEvent::HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)";
+our $USERAGENT          = "Mozilla/5.0 (compatible; U; AnyEvent-HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)";
 our $MAX_RECURSE        =  10;
 our $MAX_PERSISTENT     =   8;
 our $PERSISTENT_TIMEOUT =   2;
@@ -167,13 +167,25 @@ based on the original netscape specification.
 The C<$hash_ref> must be an (initially empty) hash reference which will
 get updated automatically. It is possible to save the cookie_jar to
 persistent storage with something like JSON or Storable, but this is not
-recommended, as expire times are currently being ignored.
+recommended, as expiry times are currently being ignored.
 
 Note that this cookie implementation is not of very high quality, nor
 meant to be complete. If you want complete cookie management you have to
 do that on your own. C<cookie_jar> is meant as a quick fix to get some
 cookie-using sites working. Cookies are a privacy disaster, do not use
 them unless required to.
+
+=item tls_ctx => $scheme | $tls_ctx
+
+Specifies the AnyEvent::TLS context to be used for https connections. This
+parameter follows the same rules as the C<tls_ctx> parameter to
+L<AnyEvent::Handle>, but additionally, the two strings C<low> or
+C<high> can be specified, which give you a predefined low-security (no
+verification, highest compatibility) and high-security (CA and common-name
+verification) TLS context.
+
+The default for this option is C<low>, which could be interpreted as "give
+me the page, no matter what".
 
 =back
 
@@ -242,11 +254,17 @@ sub _get_slot($$) {
 our $qr_nl   = qr<\015?\012>;
 our $qr_nlnl = qr<\015?\012\015?\012>;
 
+our $TLS_CTX_LOW  = { cache => 1, dh => undef, sslv2 => 1 };
+our $TLS_CTX_HIGH = { cache => 1, verify => 1, verify_cn => "https", dh => "skip4096" };
+
 sub http_request($$@) {
    my $cb = pop;
    my ($method, $url, %arg) = @_;
 
    my %hdr;
+
+   $arg{tls_ctx} = $TLS_CTX_LOW  if $arg{tls_ctx} eq "low" || !exists $arg{tls_ctx};
+   $arg{tls_ctx} = $TLS_CTX_HIGH if $arg{tls_ctx} eq "high";
 
    $method = uc $method;
 
@@ -258,7 +276,7 @@ sub http_request($$@) {
 
    my $recurse = exists $arg{recurse} ? delete $arg{recurse} : $MAX_RECURSE;
 
-   return $cb->(undef, { Status => 599, Reason => "recursion limit reached", URL => $url })
+   return $cb->(undef, { Status => 599, Reason => "Too many redirections", URL => $url })
       if $recurse < 0;
 
    my $proxy   = $arg{proxy}   || $PROXY;
@@ -273,12 +291,12 @@ sub http_request($$@) {
 
    my $uport = $uscheme eq "http"  ?  80
              : $uscheme eq "https" ? 443
-             : return $cb->(undef, { Status => 599, Reason => "only http and https URL schemes supported", URL => $url });
+             : return $cb->(undef, { Status => 599, Reason => "Only http and https URL schemes supported (not '$uscheme')", URL => $url });
 
    $hdr{referer} ||= "$uscheme://$uauthority$upath"; # leave out fragment and query string, just a heuristic
 
    $uauthority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
-      or return $cb->(undef, { Status => 599, Reason => "unparsable URL", URL => $url });
+      or return $cb->(undef, { Status => 599, Reason => "Unparsable URL", URL => $url });
 
    my $uhost = $1;
    $uport = $2 if defined $2;
@@ -343,15 +361,17 @@ sub http_request($$@) {
 
       $state{connect_guard} = AnyEvent::Socket::tcp_connect $rhost, $rport, sub {
          $state{fh} = shift
-            or return $cb->(undef, { Status => 599, Reason => "$!", URL => $url });
+            or return (%state = (), $cb->(undef, { Status => 599, Reason => "$!", URL => $url }));
          pop; # free memory, save a tree
 
          return unless delete $state{connect_guard};
 
          # get handle
          $state{handle} = new AnyEvent::Handle
-            fh      => $state{fh},
-            timeout => $timeout;
+            fh       => $state{fh},
+            timeout  => $timeout,
+            peername => $rhost,
+            tls_ctx  => $arg{tls_ctx};
 
          # limit the number of persistent connections
          # keepalive not yet supported
@@ -367,13 +387,12 @@ sub http_request($$@) {
 
          # (re-)configure handle
          $state{handle}->on_error (sub {
-            my $errno = "$!";
             %state = ();
-            $cb->(undef, { Status => 599, Reason => $errno, URL => $url });
+            $cb->(undef, { Status => 599, Reason => $_[2], URL => $url });
          });
          $state{handle}->on_eof (sub {
             %state = ();
-            $cb->(undef, { Status => 599, Reason => "unexpected end-of-file", URL => $url });
+            $cb->(undef, { Status => 599, Reason => "Unexpected end-of-file", URL => $url });
          });
 
          $state{handle}->starttls ("connect") if $rscheme eq "https";
@@ -395,7 +414,7 @@ sub http_request($$@) {
             # status line
             $state{handle}->push_read (line => $qr_nl, sub {
                $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid server response ($_[1])", URL => $url }));
+                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid server response ($_[1])", URL => $url }));
 
                my %hdr = ( # response headers
                   HTTPVersion => ",$1",
@@ -409,9 +428,9 @@ sub http_request($$@) {
                   for ("$_[1]\012") {
                      y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
-                     # we support spaces in field names, as lotus domino
-                     # creates them (actually spaces around seperators
-                     # are strictly allowed in http, they are a security issue).
+                     # things seen, not parsed:
+                     # p3pP="NON CUR OTPi OUR NOR UNI"
+
                      $hdr{lc $1} .= ",$2"
                         while /\G
                               ([^:\000-\037]+):
@@ -421,7 +440,7 @@ sub http_request($$@) {
                            /gxc;
 
                      /\G$/
-                       or return (%state = (), $cb->(undef, { Status => 599, Reason => "garbled response headers", URL => $url }));
+                       or return (%state = (), $cb->(undef, { Status => 599, Reason => "Garbled response headers", URL => $url }));
                   }
 
                   substr $_, 0, 1, ""
@@ -499,7 +518,7 @@ sub http_request($$@) {
                      if ($_[1]{Status} =~ /^30[12]$/ && $recurse && $method ne "POST") {
                         # apparently, mozilla et al. just change POST to GET here
                         # more research is needed before we do the same
-                        http_request ($method, $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
+                        http_request ($method => $_[1]{location}, %arg, recurse => $recurse - 1, $cb);
                      } elsif ($_[1]{Status} == 303 && $recurse) {
                         # even http/1.1 is unclear on how to mutate the method
                         $method = "GET" unless $method eq "HEAD";
@@ -547,7 +566,7 @@ sub http_request($$@) {
             $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012Host: $uhost\015\012\015\012");
             $state{handle}->push_read (line => $qr_nlnl, sub {
                $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "invalid proxy connect response ($_[1])", URL => $url }));
+                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid proxy connect response ($_[1])", URL => $url }));
 
                if ($2 == 200) {
                   $rpath = $upath;
@@ -603,7 +622,7 @@ The default value for the C<recurse> request parameter (default: C<10>).
 =item $AnyEvent::HTTP::USERAGENT
 
 The default value for the C<User-Agent> header (the default is
-C<Mozilla/5.0 (compatible; AnyEvent::HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)>).
+C<Mozilla/5.0 (compatible; U; AnyEvent-HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)>).
 
 =item $AnyEvent::HTTP::MAX_PERSISTENT
 

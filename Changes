@@ -3,6 +3,12 @@ Revision history for AnyEvent::HTTP
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: incorporate incremental-data-transfer hooks
 
+	- http_request would not instantly clear the connection slot on
+          tcp_connect failures, potentially leading to deadlocks.
+	- ucfirst all error messages generated internally.
+        - include "U" token in User-Agent.
+        - allow passing of tls_ctx, predefine two https security profiles.
+
 1.12 Thu Jun 11 14:45:18 CEST 2009
 	- $scheme wasn't optional in the proxy specification (reported by
           Felix Antonius Wilhelm Ostmann).
