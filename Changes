@@ -5,9 +5,15 @@ TODO: incorporate incremental-data-transfer hooks
 
 	- http_request would not instantly clear the connection slot on
           tcp_connect failures, potentially leading to deadlocks.
+        - new parameters: on_header, on_body, want_body_handle.
+        - redirects will be followed when recurse is enabled whether or not
+          the body dowload was successful or not.
+        - always include :port in Host header.
+        - pass the empty string, not undef, when there is no body but
+          no error occured.
+        - allow passing of tls_ctx, predefine two https security profiles.
 	- ucfirst all error messages generated internally.
         - include "U" token in User-Agent.
-        - allow passing of tls_ctx, predefine two https security profiles.
 
 1.12 Thu Jun 11 14:45:18 CEST 2009
 	- $scheme wasn't optional in the proxy specification (reported by
