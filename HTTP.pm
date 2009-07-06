@@ -96,9 +96,9 @@ C<http_request> returns a "cancellation guard" - you have to keep the
 object at least alive until the callback get called. If the object gets
 destroyed before the callbakc is called, the request will be cancelled.
 
-The callback will be called with the response data as first argument
-(or C<undef> if it wasn't available due to errors), and a hash-ref with
-response headers as second argument.
+The callback will be called with the response body data as first argument
+(or C<undef> if an error occured), and a hash-ref with response headers as
+second argument.
 
 All the headers in that hash are lowercased. In addition to the response
 headers, the "pseudo-headers" C<HTTPVersion>, C<Status> and C<Reason>
@@ -188,7 +188,7 @@ verification) TLS context.
 The default for this option is C<low>, which could be interpreted as "give
 me the page, no matter what".
 
-=item on_header => $callback->($hdr)
+=item on_header => $callback->($headers)
 
 When specified, this callback will be called with the header hash as soon
 as headers have been successfully received from the remote server (not on
@@ -202,18 +202,25 @@ This callback is useful, among other things, to quickly reject unwanted
 content, which, if it is supposed to be rare, can be faster than first
 doing a C<HEAD> request.
 
-=item on_body => $callback->($data, $hdr)
+Example: cancel the request unless the content-type is "text/html".
 
-When specified, all body data will be "filtered" through this callback.
+   on_header => sub {
+      $_[0]{"content-type"} =~ /^text\/html\s*(?:;|$)/
+   },
 
-The callback will incrementally receive body data, and is supposed to
-return it or a modified version of it (empty strings are valid returns).
+=item on_body => $callback->($partial_body, $headers)
 
-If the callback returns C<undef>, then the request will be cancelled.
+When specified, all body data will be passed to this callback instead of
+to the completion callback. The completion callback will get the empty
+string instead of the body data.
 
-This callback is useful when you want to do some processing on the data,
-or the data is too large to be held in memory (so the callback writes it
-to a file and returns the empty string) and so on.
+It has to return either true (in which case AnyEvent::HTTP will continue),
+or false, in which case AnyEvent::HTTP will cancel the download (and call
+the completion callback with an error code of C<598>).
+
+This callback is useful when the data is too large to be held in memory
+(so the callback writes it to a file) or when only some information should
+be extracted, or when the body should be processed incrementally.
 
 It is usually preferred over doing your own body handling via
 C<want_body_handle>.
@@ -599,7 +606,7 @@ sub http_request($$@) {
                   if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
                      $finish->(undef, { Status => 598, Reason => "Request cancelled by on_header", URL => $url });
                   } elsif (
-                     $hdr{Status} =~ /^(?:1..|204|304)$/
+                     $hdr{Status} =~ /^(?:1..|[23]04)$/
                      or $method eq "HEAD"
                      or (defined $len && !$len)
                   ) {
