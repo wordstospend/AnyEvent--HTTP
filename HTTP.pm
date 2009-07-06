@@ -61,7 +61,7 @@ our $PERSISTENT_TIMEOUT =   2;
 our $TIMEOUT            = 300;
 
 # changing these is evil
-our $MAX_PERSISTENT_PER_HOST = 2;
+our $MAX_PERSISTENT_PER_HOST = 0;
 our $MAX_PER_HOST       = 4;
 
 our $PROXY;
@@ -357,6 +357,8 @@ sub http_request($$@) {
    my $uhost = $1;
    $uport = $2 if defined $2;
 
+   $hdr{host} = defined $2 ? "$uhost:$2" : "$uhost";
+
    $uhost =~ s/^\[(.*)\]$/$1/;
    $upath .= "?$query" if length $query;
 
@@ -408,7 +410,6 @@ sub http_request($$@) {
    $hdr{"user-agent"} ||= $USERAGENT;
    $hdr{referer}      ||= "$uscheme://$uauthority$upath"; # leave out fragment and query string, just a heuristic
 
-   $hdr{host} = "$uhost:$uport";
    $hdr{"content-length"} = length $arg{body};
 
    my %state = (connect_guard => 1);
@@ -492,7 +493,7 @@ sub http_request($$@) {
 
                      $hdr{lc $1} .= ",$2"
                         while /\G
-                              ([^:\000-\037]+):
+                              ([^:\000-\037]*):
                               [\011\040]*
                               ((?: [^\012]+ | \012[\011\040] )*)
                               \012
@@ -656,7 +657,7 @@ sub http_request($$@) {
                            });
                         } else {
                            $_[0]->on_error (sub {
-                              $! == Errno::EPIPE
+                              $! == Errno::EPIPE || !$!
                                  ? $finish->(delete $_[0]{rbuf}, \%hdr)
                                  : $finish->(undef, { Status => 599, Reason => $_[2], URL => $url });
                            });
@@ -734,17 +735,14 @@ The default value for the C<recurse> request parameter (default: C<10>).
 The default value for the C<User-Agent> header (the default is
 C<Mozilla/5.0 (compatible; U; AnyEvent-HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)>).
 
-=item $AnyEvent::HTTP::MAX_PERSISTENT
+=item $AnyEvent::HTTP::MAX_PER_HOST
 
-The maximum number of persistent connections to keep open (default: 8).
+The maximum number of concurrent conenctions to the same host (identified
+by the hostname). If the limit is exceeded, then the additional requests
+are queued until previous connections are closed.
 
-Not implemented currently.
-
-=item $AnyEvent::HTTP::PERSISTENT_TIMEOUT
-
-The maximum time to cache a persistent connection, in seconds (default: 2).
-
-Not implemented currently.
+The default value for this is C<4>, and it is highly advisable to not
+increase it.
 
 =item $AnyEvent::HTTP::ACTIVE
 

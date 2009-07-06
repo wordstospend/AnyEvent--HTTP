@@ -2,18 +2,23 @@ Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: incorporate incremental-data-transfer hooks
+TODO: when recurse as initially true, geenerate error on rediretc loops etc.
 
 	- http_request would not instantly clear the connection slot on
           tcp_connect failures, potentially leading to deadlocks.
         - new parameters: on_header, on_body, want_body_handle.
         - redirects will be followed when recurse is enabled whether or not
           the body dowload was successful or not.
-        - always include :port in Host header.
+        - include :port in Host header when given in the url (many sites break
+          when it's always there, and many break if it's missing...).
         - pass the empty string, not undef, when there is no body but
           no error occured.
         - allow passing of tls_ctx, predefine two https security profiles.
 	- ucfirst all error messages generated internally.
         - include "U" token in User-Agent.
+        - document $AnyEvent::HTTP::MAX_PER_HOST.
+        - allow empty field names in response headers (microsoft hits. microsoft
+          hits. microsoft hits. you die).
 
 1.12 Thu Jun 11 14:45:18 CEST 2009
 	- $scheme wasn't optional in the proxy specification (reported by
