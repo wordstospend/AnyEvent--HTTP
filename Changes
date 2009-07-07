@@ -1,11 +1,13 @@
 Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
-TODO: incorporate incremental-data-transfer hooks
 TODO: when recurse as initially true, geenerate error on rediretc loops etc.
 
+1.4  Tue Jul  7 02:14:53 CEST 2009
 	- http_request would not instantly clear the connection slot on
           tcp_connect failures, potentially leading to deadlocks.
+        - fix a bug where a connection error is wrongly reported
+          as EINPROGRESS.
         - new parameters: on_header, on_body, want_body_handle.
         - redirects will be followed when recurse is enabled whether or not
           the body dowload was successful or not.

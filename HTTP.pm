@@ -43,14 +43,14 @@ no warnings;
 
 use Errno ();
 
-use AnyEvent 4.452 ();
+use AnyEvent 4.8 ();
 use AnyEvent::Util ();
 use AnyEvent::Socket ();
 use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.12';
+our $VERSION = '1.4';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -421,7 +421,12 @@ sub http_request($$@) {
 
       $state{connect_guard} = AnyEvent::Socket::tcp_connect $rhost, $rport, sub {
          $state{fh} = shift
-            or return (%state = (), $cb->(undef, { Status => 599, Reason => "$!", URL => $url }));
+            or do {
+               my $err = "$!";
+               %state = ();
+               return $cb->(undef, { Status => 599, Reason => $err, URL => $url });
+            };
+
          pop; # free memory, save a tree
 
          return unless delete $state{connect_guard};

@@ -51,9 +51,9 @@ DESCRIPTION
         gets destroyed before the callbakc is called, the request will be
         cancelled.
 
-        The callback will be called with the response data as first argument
-        (or "undef" if it wasn't available due to errors), and a hash-ref
-        with response headers as second argument.
+        The callback will be called with the response body data as first
+        argument (or "undef" if an error occured), and a hash-ref with
+        response headers as second argument.
 
         All the headers in that hash are lowercased. In addition to the
         response headers, the "pseudo-headers" "HTTPVersion", "Status" and
@@ -66,7 +66,8 @@ DESCRIPTION
 
         If an internal error occurs, such as not being able to resolve a
         hostname, then $data will be "undef", "$headers->{Status}" will be
-        599 and the "Reason" pseudo-header will contain an error message.
+        "59x" (usually 599) and the "Reason" pseudo-header will contain an
+        error message.
 
         A typical callback might look like this:
 
@@ -117,7 +118,7 @@ DESCRIPTION
             The $hash_ref must be an (initially empty) hash reference which
             will get updated automatically. It is possible to save the
             cookie_jar to persistent storage with something like JSON or
-            Storable, but this is not recommended, as expire times are
+            Storable, but this is not recommended, as expiry times are
             currently being ignored.
 
             Note that this cookie implementation is not of very high
@@ -126,6 +127,79 @@ DESCRIPTION
             meant as a quick fix to get some cookie-using sites working.
             Cookies are a privacy disaster, do not use them unless required
             to.
+
+        tls_ctx => $scheme | $tls_ctx
+            Specifies the AnyEvent::TLS context to be used for https
+            connections. This parameter follows the same rules as the
+            "tls_ctx" parameter to AnyEvent::Handle, but additionally, the
+            two strings "low" or "high" can be specified, which give you a
+            predefined low-security (no verification, highest compatibility)
+            and high-security (CA and common-name verification) TLS context.
+
+            The default for this option is "low", which could be interpreted
+            as "give me the page, no matter what".
+
+        on_header => $callback->($headers)
+            When specified, this callback will be called with the header
+            hash as soon as headers have been successfully received from the
+            remote server (not on locally-generated errors).
+
+            It has to return either true (in which case AnyEvent::HTTP will
+            continue), or false, in which case AnyEvent::HTTP will cancel
+            the download (and call the finish callback with an error code of
+            598).
+
+            This callback is useful, among other things, to quickly reject
+            unwanted content, which, if it is supposed to be rare, can be
+            faster than first doing a "HEAD" request.
+
+            Example: cancel the request unless the content-type is
+            "text/html".
+
+               on_header => sub {
+                  $_[0]{"content-type"} =~ /^text\/html\s*(?:;|$)/
+               },
+
+        on_body => $callback->($partial_body, $headers)
+            When specified, all body data will be passed to this callback
+            instead of to the completion callback. The completion callback
+            will get the empty string instead of the body data.
+
+            It has to return either true (in which case AnyEvent::HTTP will
+            continue), or false, in which case AnyEvent::HTTP will cancel
+            the download (and call the completion callback with an error
+            code of 598).
+
+            This callback is useful when the data is too large to be held in
+            memory (so the callback writes it to a file) or when only some
+            information should be extracted, or when the body should be
+            processed incrementally.
+
+            It is usually preferred over doing your own body handling via
+            "want_body_handle".
+
+        want_body_handle => $enable
+            When enabled (default is disabled), the behaviour of
+            AnyEvent::HTTP changes considerably: after parsing the headers,
+            and instead of downloading the body (if any), the completion
+            callback will be called. Instead of the $body argument
+            containing the body data, the callback will receive the
+            AnyEvent::Handle object associated with the connection. In error
+            cases, "undef" will be passed. When there is no body (e.g.
+            status 304), the empty string will be passed.
+
+            The handle object might or might not be in TLS mode, might be
+            connected to a proxy, be a persistent connection etc., and
+            configured in unspecified ways. The user is responsible for this
+            handle (it will not be used by this module anymore).
+
+            This is useful with some push-type services, where, after the
+            initial headers, an interactive protocol is used (typical
+            example would be the push-style twitter API which starts a
+            JSON/XML stream).
+
+            If you think you need this, first have a look at "on_body", to
+            see if that doesn'T solve your problem in a better way.
 
         Example: make a simple HTTP GET request for http://www.nethype.de/
 
@@ -167,20 +241,17 @@ DESCRIPTION
 
     $AnyEvent::HTTP::USERAGENT
         The default value for the "User-Agent" header (the default is
-        "Mozilla/5.0 (compatible; AnyEvent::HTTP/$VERSION;
+        "Mozilla/5.0 (compatible; U; AnyEvent-HTTP/$VERSION;
         +http://software.schmorp.de/pkg/AnyEvent)").
 
-    $AnyEvent::HTTP::MAX_PERSISTENT
-        The maximum number of persistent connections to keep open (default:
-        8).
+    $AnyEvent::HTTP::MAX_PER_HOST
+        The maximum number of concurrent conenctions to the same host
+        (identified by the hostname). If the limit is exceeded, then the
+        additional requests are queued until previous connections are
+        closed.
 
-        Not implemented currently.
-
-    $AnyEvent::HTTP::PERSISTENT_TIMEOUT
-        The maximum time to cache a persistent connection, in seconds
-        (default: 2).
-
-        Not implemented currently.
+        The default value for this is 4, and it is highly advisable to not
+        increase it.
 
     $AnyEvent::HTTP::ACTIVE
         The number of active connections. This is not the number of
