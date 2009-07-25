@@ -176,7 +176,10 @@ DESCRIPTION
             processed incrementally.
 
             It is usually preferred over doing your own body handling via
-            "want_body_handle".
+            "want_body_handle", but in case of streaming APIs, where HTTP is
+            only used to create a connection, "want_body_handle" is the
+            better alternative, as it allows you to install your own event
+            handler, reducing resource usage.
 
         want_body_handle => $enable
             When enabled (default is disabled), the behaviour of
@@ -199,7 +202,7 @@ DESCRIPTION
             JSON/XML stream).
 
             If you think you need this, first have a look at "on_body", to
-            see if that doesn'T solve your problem in a better way.
+            see if that doesn't solve your problem in a better way.
 
         Example: make a simple HTTP GET request for http://www.nethype.de/
 

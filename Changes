@@ -3,6 +3,10 @@ Revision history for AnyEvent::HTTP
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: when recurse as initially true, geenerate error on rediretc loops etc.
 
+1.41 Sat Jul 25 03:27:05 CEST 2009
+	- correctly parse completely headerless responses (e.g. by gatling).
+          (analysed by Robin Redeker).
+
 1.4  Tue Jul  7 02:14:53 CEST 2009
 	- http_request would not instantly clear the connection slot on
           tcp_connect failures, potentially leading to deadlocks.

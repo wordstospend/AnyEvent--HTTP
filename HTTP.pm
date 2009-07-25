@@ -50,7 +50,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.4';
+our $VERSION = '1.41';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -314,8 +314,8 @@ sub _get_slot($$) {
    _slot_schedule $_[0];
 }
 
-our $qr_nl   = qr<\015?\012>;
-our $qr_nlnl = qr<\015?\012\015?\012>;
+our $qr_nl   = qr{\015?\012};
+our $qr_nlnl = qr{(?<![^\012])\015?\012};
 
 our $TLS_CTX_LOW  = { cache => 1, sslv2 => 1 };
 our $TLS_CTX_HIGH = { cache => 1, verify => 1, verify_peername => "https" };
@@ -493,7 +493,7 @@ sub http_request($$@) {
 
                # headers, could be optimized a bit
                $state{handle}->unshift_read (line => $qr_nlnl, sub {
-                  for ("$_[1]\012") {
+                  for ("$_[1]") {
                      y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
                      # things seen, not parsed:
