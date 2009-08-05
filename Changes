@@ -3,6 +3,16 @@ Revision history for AnyEvent::HTTP
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: when recurse as initially true, geenerate error on rediretc loops etc.
 
+TODO: http://efl20.com/wp-register.php refresh-header, instead of location
+
+1.42
+	- allow suppression of auto-supplied header fieds by specifying undef
+          (requested by Mr Guest).
+        - allow proxy scheme to be missing, as documented
+          (reported by Mr Guest).
+        - do not follow redirects if we do not have a location header
+          (requested by Mr Guest).
+
 1.41 Sat Jul 25 03:27:05 CEST 2009
 	- correctly parse completely headerless responses (e.g. by gatling).
           (analysed by Robin Redeker).
