@@ -142,7 +142,7 @@ The request headers to use. Currently, C<http_request> may provide its
 own C<Host:>, C<Content-Length:>, C<Connection:> and C<Cookie:> headers
 and will provide defaults for C<User-Agent:> and C<Referer:> (this can be
 suppressed by using C<undef> for these headers in which case they won't be
-send at all).
+sent at all).
 
 =item timeout => $seconds
 
