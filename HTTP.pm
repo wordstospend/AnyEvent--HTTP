@@ -140,7 +140,9 @@ retries and so on, and how often to do so.
 
 The request headers to use. Currently, C<http_request> may provide its
 own C<Host:>, C<Content-Length:>, C<Connection:> and C<Cookie:> headers
-and will provide defaults for C<User-Agent:> and C<Referer:>.
+and will provide defaults for C<User-Agent:> and C<Referer:> (this can be
+suppressed by using C<undef> for these headers in which case they won't be
+send at all).
 
 =item timeout => $seconds
 
@@ -152,7 +154,7 @@ the timeout, as will read or write activity. Default timeout is 5 minutes.
 Use the given http proxy for all requests. If not specified, then the
 default proxy (as specified by C<$ENV{http_proxy}>) is used.
 
-C<$scheme> must be either missing or C<http> for HTTP, or C<https> for
+C<$scheme> must be either missing, C<http> for HTTP or C<https> for
 HTTPS.
 
 =item body => $string
@@ -403,6 +405,8 @@ sub http_request($$@) {
    if ($proxy) {
       ($rpath, $rhost, $rport, $rscheme) = ($url, @$proxy);
 
+      $rscheme = "http" unless defined $rscheme;
+
       # don't support https requests over https-proxy transport,
       # can't be done with tls as spec'ed, unless you double-encrypt.
       $rscheme = "http" if $uscheme eq "https" && $rscheme eq "https";
@@ -410,8 +414,9 @@ sub http_request($$@) {
       ($rhost, $rport, $rscheme, $rpath) = ($uhost, $uport, $uscheme, $upath);
    }
 
-   $hdr{"user-agent"} ||= $USERAGENT;
-   $hdr{referer}      ||= "$uscheme://$uauthority$upath"; # leave out fragment and query string, just a heuristic
+   # leave out fragment and query string, just a heuristic
+   $hdr{referer}      ||= "$uscheme://$uauthority$upath" unless exists $hdr{referer};
+   $hdr{"user-agent"} ||= $USERAGENT                     unless exists $hdr{"user-agent"};
 
    $hdr{"content-length"} = length $arg{body};
 
@@ -472,7 +477,7 @@ sub http_request($$@) {
             # send request
             $state{handle}->push_write (
                "$method $rpath HTTP/1.0\015\012"
-               . (join "", map "\u$_: $hdr{$_}\015\012", keys %hdr)
+               . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
                . "\015\012"
                . (delete $arg{body})
             );
@@ -600,7 +605,7 @@ sub http_request($$@) {
                         }
                      }
 
-                     if ($redirect) {
+                     if ($redirect && exists $hdr{location}) {
                         # we ignore any errors, as it is very common to receive
                         # Content-Length != 0 but no actual body
                         # we also access %hdr, as $_[1] might be an erro
@@ -745,7 +750,7 @@ C<Mozilla/5.0 (compatible; U; AnyEvent-HTTP/$VERSION; +http://software.schmorp.d
 
 =item $AnyEvent::HTTP::MAX_PER_HOST
 
-The maximum number of concurrent conenctions to the same host (identified
+The maximum number of concurrent connections to the same host (identified
 by the hostname). If the limit is exceeded, then the additional requests
 are queued until previous connections are closed.
 
