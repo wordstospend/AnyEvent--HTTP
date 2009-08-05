@@ -92,7 +92,8 @@ DESCRIPTION
             The request headers to use. Currently, "http_request" may
             provide its own "Host:", "Content-Length:", "Connection:" and
             "Cookie:" headers and will provide defaults for "User-Agent:"
-            and "Referer:".
+            and "Referer:" (this can be suppressed by using "undef" for
+            these headers in which case they won't be sent at all).
 
         timeout => $seconds
             The time-out to use for various stages - each connect attempt
@@ -104,8 +105,8 @@ DESCRIPTION
             then the default proxy (as specified by $ENV{http_proxy}) is
             used.
 
-            $scheme must be either missing or "http" for HTTP, or "https"
-            for HTTPS.
+            $scheme must be either missing, "http" for HTTP or "https" for
+            HTTPS.
 
         body => $string
             The request body, usually empty. Will be-sent as-is (future
@@ -248,7 +249,7 @@ DESCRIPTION
         +http://software.schmorp.de/pkg/AnyEvent)").
 
     $AnyEvent::HTTP::MAX_PER_HOST
-        The maximum number of concurrent conenctions to the same host
+        The maximum number of concurrent connections to the same host
         (identified by the hostname). If the limit is exceeded, then the
         additional requests are queued until previous connections are
         closed.
