@@ -4,6 +4,7 @@ TODO: provide lwp_request function that takes an lwp http requets and returns a 
 TODO: when recurse as initially true, geenerate error on rediretc loops etc.
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 
+TODO: anyevent on_prepare callback for connects
 1.42 Wed Aug  5 18:43:01 CEST 2009
 	- allow suppression of auto-supplied header fieds by specifying undef
           (requested by Mr Guest).

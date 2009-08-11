@@ -704,9 +704,7 @@ sub http_request($$@) {
             &$handle_actual_request;
          }
 
-      }, sub {
-         $timeout
-      };
+      }, $arg{on_prepare} || sub { $timeout };
    };
 
    defined wantarray && AnyEvent::Util::guard { %state = () }
