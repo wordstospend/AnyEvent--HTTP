@@ -43,14 +43,14 @@ no warnings;
 
 use Errno ();
 
-use AnyEvent 4.8 ();
+use AnyEvent 5.0 ();
 use AnyEvent::Util ();
 use AnyEvent::Socket ();
 use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.42';
+our $VERSION = '1.43';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -147,7 +147,10 @@ sent at all).
 =item timeout => $seconds
 
 The time-out to use for various stages - each connect attempt will reset
-the timeout, as will read or write activity. Default timeout is 5 minutes.
+the timeout, as will read or write activity, i.e. this is not an overall
+timeout.
+
+Default timeout is 5 minutes.
 
 =item proxy => [$host, $port[, $scheme]] or undef
 
@@ -189,6 +192,15 @@ verification) TLS context.
 
 The default for this option is C<low>, which could be interpreted as "give
 me the page, no matter what".
+
+=item on_prepare => $callback->($fh)
+
+In rare cases you need to "tune" the socket before it is used to
+connect (for exmaple, to bind it on a given IP address). This parameter
+overrides the prepare callback passed to C<AnyEvent::Socket::tcp_connect>
+and behaves exactly the same way (e.g. it has to provide a
+timeout). See the description for the C<$prepare_cb> argument of
+C<AnyEvent::Socket::tcp_connect> for details.
 
 =item on_header => $callback->($headers)
 

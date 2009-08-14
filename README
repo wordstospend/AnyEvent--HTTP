@@ -97,8 +97,10 @@ DESCRIPTION
 
         timeout => $seconds
             The time-out to use for various stages - each connect attempt
-            will reset the timeout, as will read or write activity. Default
-            timeout is 5 minutes.
+            will reset the timeout, as will read or write activity, i.e.
+            this is not an overall timeout.
+
+            Default timeout is 5 minutes.
 
         proxy => [$host, $port[, $scheme]] or undef
             Use the given http proxy for all requests. If not specified,
@@ -139,6 +141,15 @@ DESCRIPTION
 
             The default for this option is "low", which could be interpreted
             as "give me the page, no matter what".
+
+        on_prepare => $callback->($fh)
+            In rare cases you need to "tune" the socket before it is used to
+            connect (for exmaple, to bind it on a given IP address). This
+            parameter overrides the prepare callback passed to
+            "AnyEvent::Socket::tcp_connect" and behaves exactly the same way
+            (e.g. it has to provide a timeout). See the description for the
+            $prepare_cb argument of "AnyEvent::Socket::tcp_connect" for
+            details.
 
         on_header => $callback->($headers)
             When specified, this callback will be called with the header
