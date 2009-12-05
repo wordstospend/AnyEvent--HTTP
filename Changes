@@ -4,8 +4,12 @@ TODO: provide lwp_request function that takes an lwp http requets and returns a 
 TODO: when recurse as initially true, geenerate error on rediretc loops etc.
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 
+1.44 Sat Dec  5 16:36:20 CET 2009
+	- do not generate content-length on get requests (if the body is empty),
+          as there are even more broken servers out there.
 	- allow set_proxy to clear the proxy again.
         - set_proxy will now croak on invalid urls.
+        - support overriding the Host-header (requested by Tatsuhiko Miyagawa).
 
 1.43 Fri Aug 14 17:02:02 CEST 2009
 	- provide on_prepare callback on common request.

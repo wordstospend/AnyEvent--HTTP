@@ -50,7 +50,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.43';
+our $VERSION = '1.44';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -374,7 +374,8 @@ sub http_request($$@) {
    my $uhost = $1;
    $uport = $2 if defined $2;
 
-   $hdr{host} = defined $2 ? "$uhost:$2" : "$uhost";
+   $hdr{host} = defined $2 ? "$uhost:$2" : "$uhost"
+      unless exists $hdr{host};
 
    $uhost =~ s/^\[(.*)\]$/$1/;
    $upath .= "?$query" if length $query;
@@ -430,7 +431,8 @@ sub http_request($$@) {
    $hdr{referer}      ||= "$uscheme://$uauthority$upath" unless exists $hdr{referer};
    $hdr{"user-agent"} ||= $USERAGENT                     unless exists $hdr{"user-agent"};
 
-   $hdr{"content-length"} = length $arg{body};
+   $hdr{"content-length"} = length $arg{body}
+      if length $arg{body} || $method ne "GET";
 
    my %state = (connect_guard => 1);
 
