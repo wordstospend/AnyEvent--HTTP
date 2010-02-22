@@ -4,6 +4,7 @@ TODO: provide lwp_request function that takes an lwp http requets and returns a 
 TODO: when recurse as initially true, geenerate error on rediretc loops etc.
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 
+TODO: maybe support broken Expires header?
 1.44 Sat Dec  5 16:36:20 CET 2009
 	- do not generate content-length on get requests (if the body is empty),
           as there are even more broken servers out there.
