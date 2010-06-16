@@ -496,6 +496,9 @@ sub http_request($$@) {
                . (delete $arg{body})
             );
 
+            # return if error occured during push_write()
+            return unless %state;
+
             %hdr = (); # reduce memory usage, save a kitten
 
             # status line
