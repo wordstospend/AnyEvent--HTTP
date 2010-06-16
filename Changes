@@ -1,10 +1,17 @@
 Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
-TODO: when recurse as initially true, geenerate error on rediretc loops etc.
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
-
+TODO: GET => POST like mozilla does it, not like the rfc does it?
 TODO: maybe support broken Expires header?
+
+1.45 Wed Jun 16 21:15:26 CEST 2010
+	- fix a bug where the handle woudl go away directly after a successful
+          connect (analyzed and patch by Maxim Dounin).
+        - due to popular demand, introduce the Redirect pseudo response header.
+        - document URL pseudo-header better.
+        - explain how to implement DNS caching.
+
 1.44 Sat Dec  5 16:36:20 CET 2009
 	- do not generate content-length on get requests (if the body is empty),
           as there are even more broken servers out there.

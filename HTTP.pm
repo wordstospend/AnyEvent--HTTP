@@ -50,7 +50,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.44';
+our $VERSION = '1.45';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -101,10 +101,22 @@ The callback will be called with the response body data as first argument
 second argument.
 
 All the headers in that hash are lowercased. In addition to the response
-headers, the "pseudo-headers" C<HTTPVersion>, C<Status> and C<Reason>
-contain the three parts of the HTTP Status-Line of the same name. The
-pseudo-header C<URL> contains the original URL (which can differ from the
-requested URL when following redirects).
+headers, the "pseudo-headers" (uppercase to avoid clashing with possible
+response headers) C<HTTPVersion>, C<Status> and C<Reason> contain the
+three parts of the HTTP Status-Line of the same name.
+
+The pseudo-header C<URL> contains the actual URL (which can differ from
+the requested URL when following redirects - for example, you might get
+an error that your URL scheme is not supported even though your URL is a
+valid http URL because it redirected to an ftp URL, in which case you can
+look at the URL pseudo header).
+
+The pseudo-header C<Redirect> only exists when the request was a result
+of an internal redirect. In that case it is an array reference with
+the C<($data, $headers)> from the redirect response. Note that this
+response could in turn be the result of a redirect itself, and C<<
+$headers->{Redirect}[1]{Redirect} >> will then contain the original
+response, and so on.
 
 If the server sends a header multiple times, then their contents will be
 joined together with a comma (C<,>), as per the HTTP spec.
@@ -351,9 +363,13 @@ sub http_request($$@) {
       }
    }
 
+   # pseudo headers for all subsequent responses
+   my @pseudo = (URL => $url);
+   push @pseudo, Redirect => delete $arg{Redirect} if exists $arg{Redirect};
+
    my $recurse = exists $arg{recurse} ? delete $arg{recurse} : $MAX_RECURSE;
 
-   return $cb->(undef, { Status => 599, Reason => "Too many redirections", URL => $url })
+   return $cb->(undef, { Status => 599, Reason => "Too many redirections", @pseudo })
       if $recurse < 0;
 
    my $proxy   = $arg{proxy}   || $PROXY;
@@ -366,10 +382,10 @@ sub http_request($$@) {
 
    my $uport = $uscheme eq "http"  ?  80
              : $uscheme eq "https" ? 443
-             : return $cb->(undef, { Status => 599, Reason => "Only http and https URL schemes supported", URL => $url });
+             : return $cb->(undef, { Status => 599, Reason => "Only http and https URL schemes supported", @pseudo });
 
    $uauthority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
-      or return $cb->(undef, { Status => 599, Reason => "Unparsable URL", URL => $url });
+      or return $cb->(undef, { Status => 599, Reason => "Unparsable URL", @pseudo });
 
    my $uhost = $1;
    $uport = $2 if defined $2;
@@ -446,7 +462,7 @@ sub http_request($$@) {
             or do {
                my $err = "$!";
                %state = ();
-               return $cb->(undef, { Status => 599, Reason => $err, URL => $url });
+               return $cb->(undef, { Status => 599, Reason => $err, @pseudo });
             };
 
          pop; # free memory, save a tree
@@ -475,11 +491,11 @@ sub http_request($$@) {
          # (re-)configure handle
          $state{handle}->on_error (sub {
             %state = ();
-            $cb->(undef, { Status => 599, Reason => $_[2], URL => $url });
+            $cb->(undef, { Status => 599, Reason => $_[2], @pseudo });
          });
          $state{handle}->on_eof (sub {
             %state = ();
-            $cb->(undef, { Status => 599, Reason => "Unexpected end-of-file", URL => $url });
+            $cb->(undef, { Status => 599, Reason => "Unexpected end-of-file", @pseudo });
          });
 
          $state{handle}->starttls ("connect") if $rscheme eq "https";
@@ -499,19 +515,18 @@ sub http_request($$@) {
             # return if error occured during push_write()
             return unless %state;
 
-            %hdr = (); # reduce memory usage, save a kitten
+            %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
 
             # status line
             $state{handle}->push_read (line => $qr_nl, sub {
                $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid server response ($_[1])", URL => $url }));
+                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid server response ($_[1])", @pseudo }));
 
-               my %hdr = ( # response headers
-                  HTTPVersion => ",$1",
-                  Status      => ",$2",
-                  Reason      => ",$3",
-                  URL         => ",$url"
-               );
+               push @pseudo,
+                  HTTPVersion => $1,
+                  Status      => $2,
+                  Reason      => $3,
+               ;
 
                # headers, could be optimized a bit
                $state{handle}->unshift_read (line => $qr_nlnl, sub {
@@ -530,11 +545,15 @@ sub http_request($$@) {
                            /gxc;
 
                      /\G$/
-                       or return (%state = (), $cb->(undef, { Status => 599, Reason => "Garbled response headers", URL => $url }));
+                       or return (%state = (), $cb->(undef, { Status => 599, Reason => "Garbled response headers", @pseudo }));
                   }
 
+                  # remove the "," prefix we added to all headers above
                   substr $_, 0, 1, ""
                      for values %hdr;
+
+                  # patch in all pseudo headers
+                  %hdr = (%hdr, @pseudo);
 
                   # redirect handling
                   # microsoft and other shitheads don't give a shit for following standards,
@@ -555,15 +574,17 @@ sub http_request($$@) {
                   my $redirect;
 
                   if ($recurse) {
-                     if ($hdr{Status} =~ /^30[12]$/ && $method ne "POST") {
+                     my $status = $hdr{Status};
+
+                     if (($status == 301 || $status == 302) && $method ne "POST") {
                         # apparently, mozilla et al. just change POST to GET here
                         # more research is needed before we do the same
                         $redirect = 1;
-                     } elsif ($hdr{Status} == 303) {
+                     } elsif ($status == 303) {
                         # even http/1.1 is unclear on how to mutate the method
                         $method = "GET" unless $method eq "HEAD";
                         $redirect = 1;
-                     } elsif ($hdr{Status} == 307 && $method =~ /^(?:GET|HEAD)$/) {
+                     } elsif ($status == 307 && $method =~ /^(?:GET|HEAD)$/) {
                         $redirect = 1;
                      }
                   }
@@ -626,7 +647,12 @@ sub http_request($$@) {
                         # we ignore any errors, as it is very common to receive
                         # Content-Length != 0 but no actual body
                         # we also access %hdr, as $_[1] might be an erro
-                        http_request ($method => $hdr{location}, %arg, recurse => $recurse - 1, $cb);
+                        http_request (
+                           $method  => $hdr{location},
+                           %arg,
+                           recurse  => $recurse - 1,
+                           Redirect => \@_,
+                           $cb);
                      } else {
                         $cb->($_[0], $_[1]);
                      }
@@ -635,7 +661,7 @@ sub http_request($$@) {
                   my $len = $hdr{"content-length"};
 
                   if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
-                     $finish->(undef, { Status => 598, Reason => "Request cancelled by on_header", URL => $url });
+                     $finish->(undef, { Status => 598, Reason => "Request cancelled by on_header", @pseudo });
                   } elsif (
                      $hdr{Status} =~ /^(?:1..|[23]04)$/
                      or $method eq "HEAD"
@@ -655,14 +681,14 @@ sub http_request($$@) {
                         $finish->(delete $state{handle}, \%hdr);
 
                      } elsif ($arg{on_body}) {
-                        $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], URL => $url }) });
+                        $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
                         if ($len) {
                            $_[0]->on_eof (undef);
                            $_[0]->on_read (sub {
                               $len -= length $_[0]{rbuf};
 
                               $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                                 or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", URL => $url });
+                                 or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
 
                               $len > 0
                                  or $finish->("", \%hdr);
@@ -673,14 +699,14 @@ sub http_request($$@) {
                            });
                            $_[0]->on_read (sub {
                               $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                                 or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", URL => $url });
+                                 or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
                            });
                         }
                      } else {
                         $_[0]->on_eof (undef);
 
                         if ($len) {
-                           $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], URL => $url }) });
+                           $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
                            $_[0]->on_read (sub {
                               $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), \%hdr)
                                  if $len <= length $_[0]{rbuf};
@@ -689,7 +715,7 @@ sub http_request($$@) {
                            $_[0]->on_error (sub {
                               $! == Errno::EPIPE || !$!
                                  ? $finish->(delete $_[0]{rbuf}, \%hdr)
-                                 : $finish->(undef, { Status => 599, Reason => $_[2], URL => $url });
+                                 : $finish->(undef, { Status => 599, Reason => $_[2], @pseudo });
                            });
                            $_[0]->on_read (sub { });
                         }
@@ -707,14 +733,14 @@ sub http_request($$@) {
             $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012Host: $uhost\015\012\015\012");
             $state{handle}->push_read (line => $qr_nlnl, sub {
                $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid proxy connect response ($_[1])", URL => $url }));
+                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid proxy connect response ($_[1])", @pseudo }));
 
                if ($2 == 200) {
                   $rpath = $upath;
                   &$handle_actual_request;
                } else {
                   %state = ();
-                  $cb->(undef, { Status => $2, Reason => $3, URL => $url });
+                  $cb->(undef, { Status => $2, Reason => $3, @pseudo });
                }
             });
          } else {
@@ -744,6 +770,15 @@ sub http_post($$@) {
 }
 
 =back
+
+=head2 DNS CACHING
+
+AnyEvent::HTTP uses the AnyEvent::Socket::tcp_connect function for
+the actual connection, which in turn uses AnyEvent::DNS to resolve
+hostnames. The latter is a simple stub resolver and does no caching
+on its own. If you want DNS caching, you currently have to provide
+your own default resolver (by storing a suitable resolver object in
+C<$AnyEvent::DNS::RESOLVER>).
 
 =head2 GLOBAL FUNCTIONS AND VARIABLES
 

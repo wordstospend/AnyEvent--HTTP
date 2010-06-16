@@ -56,10 +56,22 @@ DESCRIPTION
         response headers as second argument.
 
         All the headers in that hash are lowercased. In addition to the
-        response headers, the "pseudo-headers" "HTTPVersion", "Status" and
-        "Reason" contain the three parts of the HTTP Status-Line of the same
-        name. The pseudo-header "URL" contains the original URL (which can
-        differ from the requested URL when following redirects).
+        response headers, the "pseudo-headers" (uppercase to avoid clashing
+        with possible response headers) "HTTPVersion", "Status" and "Reason"
+        contain the three parts of the HTTP Status-Line of the same name.
+
+        The pseudo-header "URL" contains the actual URL (which can differ
+        from the requested URL when following redirects - for example, you
+        might get an error that your URL scheme is not supported even though
+        your URL is a valid http URL because it redirected to an ftp URL, in
+        which case you can look at the URL pseudo header).
+
+        The pseudo-header "Redirect" only exists when the request was a
+        result of an internal redirect. In that case it is an array
+        reference with the "($data, $headers)" from the redirect response.
+        Note that this response could in turn be the result of a redirect
+        itself, and "$headers->{Redirect}[1]{Redirect}" will then contain
+        the original response, and so on.
 
         If the server sends a header multiple times, then their contents
         will be joined together with a comma (","), as per the HTTP spec.
@@ -245,6 +257,14 @@ DESCRIPTION
            };
 
            undef $request;
+
+  DNS CACHING
+    AnyEvent::HTTP uses the AnyEvent::Socket::tcp_connect function for the
+    actual connection, which in turn uses AnyEvent::DNS to resolve
+    hostnames. The latter is a simple stub resolver and does no caching on
+    its own. If you want DNS caching, you currently have to provide your own
+    default resolver (by storing a suitable resolver object in
+    $AnyEvent::DNS::RESOLVER).
 
   GLOBAL FUNCTIONS AND VARIABLES
     AnyEvent::HTTP::set_proxy "proxy-url"
