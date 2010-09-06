@@ -50,7 +50,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.45';
+our $VERSION = '1.46';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -340,7 +340,6 @@ sub _get_slot($$) {
    _slot_schedule $_[0];
 }
 
-our $qr_nl   = qr{\015?\012};
 our $qr_nlnl = qr{(?<![^\012])\015?\012};
 
 our $TLS_CTX_LOW  = { cache => 1, sslv2 => 1 };
@@ -517,211 +516,209 @@ sub http_request($$@) {
 
             %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
 
-            # status line
-            $state{handle}->push_read (line => $qr_nl, sub {
-               $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid server response ($_[1])", @pseudo }));
+            # status line and headers
+            $state{handle}->push_read (line => $qr_nlnl, sub {
+               for ("$_[1]") {
+                  y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
-               push @pseudo,
-                  HTTPVersion => $1,
-                  Status      => $2,
-                  Reason      => $3,
-               ;
+                  /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )? \015?\012/igxc
+                     or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid server response", @pseudo }));
 
-               # headers, could be optimized a bit
-               $state{handle}->unshift_read (line => $qr_nlnl, sub {
-                  for ("$_[1]") {
-                     y/\015//d; # weed out any \015, as they show up in the weirdest of places.
+                  push @pseudo,
+                     HTTPVersion => $1,
+                     Status      => $2,
+                     Reason      => $3,
+                  ;
 
-                     # things seen, not parsed:
-                     # p3pP="NON CUR OTPi OUR NOR UNI"
+                  # things seen, not parsed:
+                  # p3pP="NON CUR OTPi OUR NOR UNI"
 
-                     $hdr{lc $1} .= ",$2"
-                        while /\G
-                              ([^:\000-\037]*):
-                              [\011\040]*
-                              ((?: [^\012]+ | \012[\011\040] )*)
-                              \012
-                           /gxc;
+                  $hdr{lc $1} .= ",$2"
+                     while /\G
+                           ([^:\000-\037]*):
+                           [\011\040]*
+                           ((?: [^\012]+ | \012[\011\040] )*)
+                           \012
+                        /gxc;
 
-                     /\G$/
-                       or return (%state = (), $cb->(undef, { Status => 599, Reason => "Garbled response headers", @pseudo }));
+                  /\G$/
+                    or return (%state = (), $cb->(undef, { Status => 599, Reason => "Garbled response headers", @pseudo }));
+               }
+
+               # remove the "," prefix we added to all headers above
+               substr $_, 0, 1, ""
+                  for values %hdr;
+
+               # patch in all pseudo headers
+               %hdr = (%hdr, @pseudo);
+
+               # redirect handling
+               # microsoft and other shitheads don't give a shit for following standards,
+               # try to support some common forms of broken Location headers.
+               if ($hdr{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
+                  $hdr{location} =~ s/^\.\/+//;
+
+                  my $url = "$rscheme://$uhost:$uport";
+
+                  unless ($hdr{location} =~ s/^\///) {
+                     $url .= $upath;
+                     $url =~ s/\/[^\/]*$//;
                   }
 
-                  # remove the "," prefix we added to all headers above
-                  substr $_, 0, 1, ""
-                     for values %hdr;
+                  $hdr{location} = "$url/$hdr{location}";
+               }
 
-                  # patch in all pseudo headers
-                  %hdr = (%hdr, @pseudo);
+               my $redirect;
 
-                  # redirect handling
-                  # microsoft and other shitheads don't give a shit for following standards,
-                  # try to support some common forms of broken Location headers.
-                  if ($hdr{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
-                     $hdr{location} =~ s/^\.\/+//;
+               if ($recurse) {
+                  my $status = $hdr{Status};
 
-                     my $url = "$rscheme://$uhost:$uport";
-
-                     unless ($hdr{location} =~ s/^\///) {
-                        $url .= $upath;
-                        $url =~ s/\/[^\/]*$//;
-                     }
-
-                     $hdr{location} = "$url/$hdr{location}";
+                  # industry standard is to redirect POST as GET for
+                  # 301, 302 and 303, in contrast to http/1.0 and 1.1.
+                  # also, the UA should ask the user for 301 and 307 and POST,
+                  # industry standard seems to be to simply follow.
+                  # we go with the industry standard.
+                  if ($status == 301 or $status == 302 or $status == 303) {
+                     # HTTP/1.1 is unclear on how to mutate the method
+                     $method = "GET" unless $method eq "HEAD";
+                     $redirect = 1;
+                  } elsif ($status == 307) {
+                     $redirect = 1;
                   }
+               }
 
-                  my $redirect;
+               my $finish = sub {
+                  $state{handle}->destroy if $state{handle};
+                  %state = ();
 
-                  if ($recurse) {
-                     my $status = $hdr{Status};
+                  # set-cookie processing
+                  if ($arg{cookie_jar}) {
+                     for ($_[1]{"set-cookie"}) {
+                        # parse NAME=VALUE
+                        my @kv;
 
-                     if (($status == 301 || $status == 302) && $method ne "POST") {
-                        # apparently, mozilla et al. just change POST to GET here
-                        # more research is needed before we do the same
-                        $redirect = 1;
-                     } elsif ($status == 303) {
-                        # even http/1.1 is unclear on how to mutate the method
-                        $method = "GET" unless $method eq "HEAD";
-                        $redirect = 1;
-                     } elsif ($status == 307 && $method =~ /^(?:GET|HEAD)$/) {
-                        $redirect = 1;
-                     }
-                  }
+                        while (/\G\s* ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )/gcxs) {
+                           my $name = $1;
+                           my $value = $3;
 
-                  my $finish = sub {
-                     $state{handle}->destroy if $state{handle};
-                     %state = ();
-
-                     # set-cookie processing
-                     if ($arg{cookie_jar}) {
-                        for ($_[1]{"set-cookie"}) {
-                           # parse NAME=VALUE
-                           my @kv;
-
-                           while (/\G\s* ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )/gcxs) {
-                              my $name = $1;
-                              my $value = $3;
-
-                              unless ($value) {
-                                 $value = $2;
-                                 $value =~ s/\\(.)/$1/gs;
-                              }
-
-                              push @kv, $name => $value;
-
-                              last unless /\G\s*;/gc;
+                           unless ($value) {
+                              $value = $2;
+                              $value =~ s/\\(.)/$1/gs;
                            }
 
-                           last unless @kv;
+                           push @kv, $name => $value;
 
-                           my $name = shift @kv;
-                           my %kv = (value => shift @kv, @kv);
-
-                           my $cdom;
-                           my $cpath = (delete $kv{path}) || "/";
-
-                           if (exists $kv{domain}) {
-                              $cdom = delete $kv{domain};
-       
-                              $cdom =~ s/^\.?/./; # make sure it starts with a "."
-
-                              next if $cdom =~ /\.$/;
-          
-                              # this is not rfc-like and not netscape-like. go figure.
-                              my $ndots = $cdom =~ y/.//;
-                              next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
-                           } else {
-                              $cdom = $uhost;
-                           }
-       
-                           # store it
-                           $arg{cookie_jar}{version} = 1;
-                           $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
-
-                           redo if /\G\s*,/gc;
+                           last unless /\G\s*;/gc;
                         }
+
+                        last unless @kv;
+
+                        my $name = shift @kv;
+                        my %kv = (value => shift @kv, @kv);
+
+                        my $cdom;
+                        my $cpath = (delete $kv{path}) || "/";
+
+                        if (exists $kv{domain}) {
+                           $cdom = delete $kv{domain};
+    
+                           $cdom =~ s/^\.?/./; # make sure it starts with a "."
+
+                           next if $cdom =~ /\.$/;
+       
+                           # this is not rfc-like and not netscape-like. go figure.
+                           my $ndots = $cdom =~ y/.//;
+                           next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
+                        } else {
+                           $cdom = $uhost;
+                        }
+    
+                        # store it
+                        $arg{cookie_jar}{version} = 1;
+                        $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
+
+                        redo if /\G\s*,/gc;
                      }
+                  }
 
-                     if ($redirect && exists $hdr{location}) {
-                        # we ignore any errors, as it is very common to receive
-                        # Content-Length != 0 but no actual body
-                        # we also access %hdr, as $_[1] might be an erro
-                        http_request (
-                           $method  => $hdr{location},
-                           %arg,
-                           recurse  => $recurse - 1,
-                           Redirect => \@_,
-                           $cb);
-                     } else {
-                        $cb->($_[0], $_[1]);
-                     }
-                  };
-
-                  my $len = $hdr{"content-length"};
-
-                  if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
-                     $finish->(undef, { Status => 598, Reason => "Request cancelled by on_header", @pseudo });
-                  } elsif (
-                     $hdr{Status} =~ /^(?:1..|[23]04)$/
-                     or $method eq "HEAD"
-                     or (defined $len && !$len)
-                  ) {
-                     # no body
-                     $finish->("", \%hdr);
+                  if ($redirect && exists $hdr{location}) {
+                     # we ignore any errors, as it is very common to receive
+                     # Content-Length != 0 but no actual body
+                     # we also access %hdr, as $_[1] might be an erro
+                     http_request (
+                        $method  => $hdr{location},
+                        %arg,
+                        recurse  => $recurse - 1,
+                        Redirect => \@_,
+                        $cb);
                   } else {
-                     # body handling, four different code paths
-                     # for want_body_handle, on_body (2x), normal (2x)
-                     # we might read too much here, but it does not matter yet (no pers. connections)
-                     if (!$redirect && $arg{want_body_handle}) {
+                     $cb->($_[0], $_[1]);
+                  }
+               };
+
+               my $len = $hdr{"content-length"};
+
+               if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
+                  $finish->(undef, { Status => 598, Reason => "Request cancelled by on_header", @pseudo });
+               } elsif (
+                  $hdr{Status} =~ /^(?:1..|[23]04)$/
+                  or $method eq "HEAD"
+                  or (defined $len && !$len)
+               ) {
+                  # no body
+                  $finish->("", \%hdr);
+               } else {
+                  # body handling, four different code paths
+                  # for want_body_handle, on_body (2x), normal (2x)
+                  # we might read too much here, but it does not matter yet (no pers. connections)
+                  if (!$redirect && $arg{want_body_handle}) {
+                     $_[0]->on_eof   (undef);
+                     $_[0]->on_error (undef);
+                     $_[0]->on_read  (undef);
+
+                     $finish->(delete $state{handle}, \%hdr);
+
+                  } elsif ($arg{on_body}) {
+                     $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
+                     if ($len) {
                         $_[0]->on_eof (undef);
-                        $_[0]->on_error (undef);
-                        $_[0]->on_read  (undef);
+                        $_[0]->on_read (sub {
+                           $len -= length $_[0]{rbuf};
 
-                        $finish->(delete $state{handle}, \%hdr);
+                           $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                              or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
 
-                     } elsif ($arg{on_body}) {
-                        $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
-                        if ($len) {
-                           $_[0]->on_eof (undef);
-                           $_[0]->on_read (sub {
-                              $len -= length $_[0]{rbuf};
-
-                              $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                                 or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
-
-                              $len > 0
-                                 or $finish->("", \%hdr);
-                           });
-                        } else {
-                           $_[0]->on_eof (sub {
-                              $finish->("", \%hdr);
-                           });
-                           $_[0]->on_read (sub {
-                              $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                                 or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
-                           });
-                        }
+                           $len > 0
+                              or $finish->("", \%hdr);
+                        });
                      } else {
-                        $_[0]->on_eof (undef);
+                        $_[0]->on_eof (sub {
+                           $finish->("", \%hdr);
+                        });
+                        $_[0]->on_read (sub {
+                           $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                              or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
+                        });
+                     }
+                  } else {
+                     $_[0]->on_eof (undef);
 
-                        if ($len) {
-                           $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
-                           $_[0]->on_read (sub {
-                              $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), \%hdr)
-                                 if $len <= length $_[0]{rbuf};
-                           });
-                        } else {
-                           $_[0]->on_error (sub {
-                              $! == Errno::EPIPE || !$!
-                                 ? $finish->(delete $_[0]{rbuf}, \%hdr)
-                                 : $finish->(undef, { Status => 599, Reason => $_[2], @pseudo });
-                           });
-                           $_[0]->on_read (sub { });
-                        }
+                     if ($len) {
+                        $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
+                        $_[0]->on_read (sub {
+                           $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), \%hdr)
+                              if $len <= length $_[0]{rbuf};
+                        });
+                     } else {
+                        $_[0]->on_error (sub {
+                           ($! == Errno::EPIPE || !$!)
+                              ? $finish->(delete $_[0]{rbuf}, \%hdr)
+                              : $finish->(undef, { Status => 599, Reason => $_[2], @pseudo });
+                        });
+                        $_[0]->on_read (sub { });
                      }
                   }
-               });
+               }
             });
          };
 

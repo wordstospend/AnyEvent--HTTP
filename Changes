@@ -2,15 +2,19 @@ Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
-TODO: GET => POST like mozilla does it, not like the rfc does it?
 TODO: maybe support broken Expires header?
 
-TODO: header liens end in \r
+1.46 Mon Sep  6 08:29:34 CEST 2010
         - some (broken) servers differentiate between empty search parts
           and nonexistant search parts, work around this (problem
           analyzed by Sergey Zasenko).
         - possibly increase robustness by always setting an on_error
-          callback ont he AnyEvent::Handle object.
+          callback on the AnyEvent::Handle object (especially in case
+          of user errors, such as nehative timeouts).
+        - we now always follow 301/302/303 redirects and mutate POST to GET.
+        - we now always follow 307 redirects, even for POST.
+        - header-less responses are not parsed correctly (at a negative
+          speed penatly :).
 
 1.45 Wed Jun 16 21:15:26 CEST 2010
 	- fix a bug where the handle would go away directly after a successful
