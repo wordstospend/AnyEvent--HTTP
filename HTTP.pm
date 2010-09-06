@@ -376,7 +376,7 @@ sub http_request($$@) {
    my $timeout = $arg{timeout} || $TIMEOUT;
 
    my ($uscheme, $uauthority, $upath, $query, $fragment) =
-      $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?|;
+      $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:(\?[^#]*))?(?:#(.*))?|;
 
    $uscheme = lc $uscheme;
 
@@ -394,7 +394,7 @@ sub http_request($$@) {
       unless exists $hdr{host};
 
    $uhost =~ s/^\[(.*)\]$/$1/;
-   $upath .= "?$query" if length $query;
+   $upath .= $query if length $query;
 
    $upath =~ s%^/?%/%;
 
@@ -472,31 +472,31 @@ sub http_request($$@) {
          # get handle
          $state{handle} = new AnyEvent::Handle
             fh       => $state{fh},
-            timeout  => $timeout,
             peername => $rhost,
-            tls_ctx  => $arg{tls_ctx};
+            tls_ctx  => $arg{tls_ctx},
+            # these need to be reconfigured on keepalive handles
+            timeout  => $timeout,
+            on_error => sub {
+               %state = ();
+               $cb->(undef, { Status => 599, Reason => $_[2], @pseudo });
+            },
+            on_eof   => sub {
+               %state = ();
+               $cb->(undef, { Status => 599, Reason => "Unexpected end-of-file", @pseudo });
+            },
+         ;
 
          # limit the number of persistent connections
          # keepalive not yet supported
-         if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
-            ++$KA_COUNT{$_[1]};
-            $state{handle}{ka_count_guard} = AnyEvent::Util::guard {
-               --$KA_COUNT{$_[1]}
-            };
-            $hdr{connection} = "keep-alive";
-         } else {
+#         if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
+#            ++$KA_COUNT{$_[1]};
+#            $state{handle}{ka_count_guard} = AnyEvent::Util::guard {
+#               --$KA_COUNT{$_[1]}
+#            };
+#            $hdr{connection} = "keep-alive";
+#         } else {
             delete $hdr{connection};
-         }
-
-         # (re-)configure handle
-         $state{handle}->on_error (sub {
-            %state = ();
-            $cb->(undef, { Status => 599, Reason => $_[2], @pseudo });
-         });
-         $state{handle}->on_eof (sub {
-            %state = ();
-            $cb->(undef, { Status => 599, Reason => "Unexpected end-of-file", @pseudo });
-         });
+#         }
 
          $state{handle}->starttls ("connect") if $rscheme eq "https";
 

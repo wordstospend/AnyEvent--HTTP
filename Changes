@@ -5,8 +5,15 @@ TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 TODO: GET => POST like mozilla does it, not like the rfc does it?
 TODO: maybe support broken Expires header?
 
+TODO: header liens end in \r
+        - some (broken) servers differentiate between empty search parts
+          and nonexistant search parts, work around this (problem
+          analyzed by Sergey Zasenko).
+        - possibly increase robustness by always setting an on_error
+          callback ont he AnyEvent::Handle object.
+
 1.45 Wed Jun 16 21:15:26 CEST 2010
-	- fix a bug where the handle woudl go away directly after a successful
+	- fix a bug where the handle would go away directly after a successful
           connect (analyzed and patch by Maxim Dounin).
         - due to popular demand, introduce the Redirect pseudo response header.
         - document URL pseudo-header better.
