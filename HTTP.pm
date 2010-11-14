@@ -94,7 +94,7 @@ must be an absolute http or https URL.
 When called in void context, nothing is returned. In other contexts,
 C<http_request> returns a "cancellation guard" - you have to keep the
 object at least alive until the callback get called. If the object gets
-destroyed before the callbakc is called, the request will be cancelled.
+destroyed before the callback is called, the request will be cancelled.
 
 The callback will be called with the response body data as first argument
 (or C<undef> if an error occured), and a hash-ref with response headers as
