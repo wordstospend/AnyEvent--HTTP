@@ -45,7 +45,6 @@ use Errno ();
 
 use AnyEvent 5.0 ();
 use AnyEvent::Util ();
-use AnyEvent::Socket ();
 use AnyEvent::Handle ();
 
 use base Exporter::;
@@ -213,6 +212,17 @@ overrides the prepare callback passed to C<AnyEvent::Socket::tcp_connect>
 and behaves exactly the same way (e.g. it has to provide a
 timeout). See the description for the C<$prepare_cb> argument of
 C<AnyEvent::Socket::tcp_connect> for details.
+
+=item tcp_connect => $callback->($host, $service, $connect_cb, $prepare_cb)
+
+In even rarer cases you want total control over how AnyEvent::HTTP
+establishes connections. Normally it uses L<AnyEvent::Socket::tcp_connect>
+to do this, but you can provide your own C<tcp_connect> function -
+obviously, it has to follow the same calling conventions.
+
+There are probably lots of weird uses for this function, starting from
+tracing the hosts C<http_request> actually tries to connect, to (inexact
+but fast) host => IP address caching or even socks protocol support.
 
 =item on_header => $callback->($headers)
 
@@ -456,37 +466,43 @@ sub http_request($$@) {
 
       return unless $state{connect_guard};
 
-      $state{connect_guard} = AnyEvent::Socket::tcp_connect $rhost, $rport, sub {
-         $state{fh} = shift
-            or do {
-               my $err = "$!";
-               %state = ();
-               return $cb->(undef, { Status => 599, Reason => $err, @pseudo });
-            };
+      my $tcp_connect = $arg{tcp_connect}
+                        || do { require AnyEvent::Socket; \&AnyEvent::Socket::tcp_connect };
 
-         pop; # free memory, save a tree
+      $state{connect_guard} = $tcp_connect->(
+         $rhost,
+         $rport,
+         sub {
+            $state{fh} = shift
+               or do {
+                  my $err = "$!";
+                  %state = ();
+                  return $cb->(undef, { Status => 599, Reason => $err, @pseudo });
+               };
 
-         return unless delete $state{connect_guard};
+            pop; # free memory, save a tree
 
-         # get handle
-         $state{handle} = new AnyEvent::Handle
-            fh       => $state{fh},
-            peername => $rhost,
-            tls_ctx  => $arg{tls_ctx},
-            # these need to be reconfigured on keepalive handles
-            timeout  => $timeout,
-            on_error => sub {
-               %state = ();
-               $cb->(undef, { Status => 599, Reason => $_[2], @pseudo });
-            },
-            on_eof   => sub {
-               %state = ();
-               $cb->(undef, { Status => 599, Reason => "Unexpected end-of-file", @pseudo });
-            },
-         ;
+            return unless delete $state{connect_guard};
 
-         # limit the number of persistent connections
-         # keepalive not yet supported
+            # get handle
+            $state{handle} = new AnyEvent::Handle
+               fh       => $state{fh},
+               peername => $rhost,
+               tls_ctx  => $arg{tls_ctx},
+               # these need to be reconfigured on keepalive handles
+               timeout  => $timeout,
+               on_error => sub {
+                  %state = ();
+                  $cb->(undef, { Status => 599, Reason => $_[2], @pseudo });
+               },
+               on_eof   => sub {
+                  %state = ();
+                  $cb->(undef, { Status => 599, Reason => "Unexpected end-of-file", @pseudo });
+               },
+            ;
+
+            # limit the number of persistent connections
+            # keepalive not yet supported
 #         if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
 #            ++$KA_COUNT{$_[1]};
 #            $state{handle}{ka_count_guard} = AnyEvent::Util::guard {
@@ -494,257 +510,259 @@ sub http_request($$@) {
 #            };
 #            $hdr{connection} = "keep-alive";
 #         } else {
-            delete $hdr{connection};
+               delete $hdr{connection};
 #         }
 
-         $state{handle}->starttls ("connect") if $rscheme eq "https";
+            $state{handle}->starttls ("connect") if $rscheme eq "https";
 
-         # handle actual, non-tunneled, request
-         my $handle_actual_request = sub {
-            $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
+            # handle actual, non-tunneled, request
+            my $handle_actual_request = sub {
+               $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
 
-            # send request
-            $state{handle}->push_write (
-               "$method $rpath HTTP/1.0\015\012"
-               . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
-               . "\015\012"
-               . (delete $arg{body})
-            );
+               # send request
+               $state{handle}->push_write (
+                  "$method $rpath HTTP/1.0\015\012"
+                  . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
+                  . "\015\012"
+                  . (delete $arg{body})
+               );
 
-            # return if error occured during push_write()
-            return unless %state;
+               # return if error occured during push_write()
+               return unless %state;
 
-            %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
+               %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
 
-            # status line and headers
-            $state{handle}->push_read (line => $qr_nlnl, sub {
-               for ("$_[1]") {
-                  y/\015//d; # weed out any \015, as they show up in the weirdest of places.
+               # status line and headers
+               $state{handle}->push_read (line => $qr_nlnl, sub {
+                  for ("$_[1]") {
+                     y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
-                  /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )? \015?\012/igxc
-                     or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid server response", @pseudo }));
+                     /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )? \015?\012/igxc
+                        or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid server response", @pseudo }));
 
-                  push @pseudo,
-                     HTTPVersion => $1,
-                     Status      => $2,
-                     Reason      => $3,
-                  ;
+                     push @pseudo,
+                        HTTPVersion => $1,
+                        Status      => $2,
+                        Reason      => $3,
+                     ;
 
-                  # things seen, not parsed:
-                  # p3pP="NON CUR OTPi OUR NOR UNI"
+                     # things seen, not parsed:
+                     # p3pP="NON CUR OTPi OUR NOR UNI"
 
-                  $hdr{lc $1} .= ",$2"
-                     while /\G
-                           ([^:\000-\037]*):
-                           [\011\040]*
-                           ((?: [^\012]+ | \012[\011\040] )*)
-                           \012
-                        /gxc;
+                     $hdr{lc $1} .= ",$2"
+                        while /\G
+                              ([^:\000-\037]*):
+                              [\011\040]*
+                              ((?: [^\012]+ | \012[\011\040] )*)
+                              \012
+                           /gxc;
 
-                  /\G$/
-                    or return (%state = (), $cb->(undef, { Status => 599, Reason => "Garbled response headers", @pseudo }));
-               }
-
-               # remove the "," prefix we added to all headers above
-               substr $_, 0, 1, ""
-                  for values %hdr;
-
-               # patch in all pseudo headers
-               %hdr = (%hdr, @pseudo);
-
-               # redirect handling
-               # microsoft and other shitheads don't give a shit for following standards,
-               # try to support some common forms of broken Location headers.
-               if ($hdr{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
-                  $hdr{location} =~ s/^\.\/+//;
-
-                  my $url = "$rscheme://$uhost:$uport";
-
-                  unless ($hdr{location} =~ s/^\///) {
-                     $url .= $upath;
-                     $url =~ s/\/[^\/]*$//;
+                     /\G$/
+                       or return (%state = (), $cb->(undef, { Status => 599, Reason => "Garbled response headers", @pseudo }));
                   }
 
-                  $hdr{location} = "$url/$hdr{location}";
-               }
+                  # remove the "," prefix we added to all headers above
+                  substr $_, 0, 1, ""
+                     for values %hdr;
 
-               my $redirect;
+                  # patch in all pseudo headers
+                  %hdr = (%hdr, @pseudo);
 
-               if ($recurse) {
-                  my $status = $hdr{Status};
+                  # redirect handling
+                  # microsoft and other shitheads don't give a shit for following standards,
+                  # try to support some common forms of broken Location headers.
+                  if ($hdr{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
+                     $hdr{location} =~ s/^\.\/+//;
 
-                  # industry standard is to redirect POST as GET for
-                  # 301, 302 and 303, in contrast to http/1.0 and 1.1.
-                  # also, the UA should ask the user for 301 and 307 and POST,
-                  # industry standard seems to be to simply follow.
-                  # we go with the industry standard.
-                  if ($status == 301 or $status == 302 or $status == 303) {
-                     # HTTP/1.1 is unclear on how to mutate the method
-                     $method = "GET" unless $method eq "HEAD";
-                     $redirect = 1;
-                  } elsif ($status == 307) {
-                     $redirect = 1;
+                     my $url = "$rscheme://$uhost:$uport";
+
+                     unless ($hdr{location} =~ s/^\///) {
+                        $url .= $upath;
+                        $url =~ s/\/[^\/]*$//;
+                     }
+
+                     $hdr{location} = "$url/$hdr{location}";
                   }
-               }
 
-               my $finish = sub {
-                  $state{handle}->destroy if $state{handle};
-                  %state = ();
+                  my $redirect;
 
-                  # set-cookie processing
-                  if ($arg{cookie_jar}) {
-                     for ($_[1]{"set-cookie"}) {
-                        # parse NAME=VALUE
-                        my @kv;
+                  if ($recurse) {
+                     my $status = $hdr{Status};
 
-                        while (/\G\s* ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )/gcxs) {
-                           my $name = $1;
-                           my $value = $3;
+                     # industry standard is to redirect POST as GET for
+                     # 301, 302 and 303, in contrast to http/1.0 and 1.1.
+                     # also, the UA should ask the user for 301 and 307 and POST,
+                     # industry standard seems to be to simply follow.
+                     # we go with the industry standard.
+                     if ($status == 301 or $status == 302 or $status == 303) {
+                        # HTTP/1.1 is unclear on how to mutate the method
+                        $method = "GET" unless $method eq "HEAD";
+                        $redirect = 1;
+                     } elsif ($status == 307) {
+                        $redirect = 1;
+                     }
+                  }
 
-                           unless ($value) {
-                              $value = $2;
-                              $value =~ s/\\(.)/$1/gs;
+                  my $finish = sub {
+                     $state{handle}->destroy if $state{handle};
+                     %state = ();
+
+                     # set-cookie processing
+                     if ($arg{cookie_jar}) {
+                        for ($_[1]{"set-cookie"}) {
+                           # parse NAME=VALUE
+                           my @kv;
+
+                           while (/\G\s* ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )/gcxs) {
+                              my $name = $1;
+                              my $value = $3;
+
+                              unless ($value) {
+                                 $value = $2;
+                                 $value =~ s/\\(.)/$1/gs;
+                              }
+
+                              push @kv, $name => $value;
+
+                              last unless /\G\s*;/gc;
                            }
 
-                           push @kv, $name => $value;
+                           last unless @kv;
 
-                           last unless /\G\s*;/gc;
-                        }
+                           my $name = shift @kv;
+                           my %kv = (value => shift @kv, @kv);
 
-                        last unless @kv;
+                           my $cdom;
+                           my $cpath = (delete $kv{path}) || "/";
 
-                        my $name = shift @kv;
-                        my %kv = (value => shift @kv, @kv);
-
-                        my $cdom;
-                        my $cpath = (delete $kv{path}) || "/";
-
-                        if (exists $kv{domain}) {
-                           $cdom = delete $kv{domain};
-    
-                           $cdom =~ s/^\.?/./; # make sure it starts with a "."
-
-                           next if $cdom =~ /\.$/;
+                           if (exists $kv{domain}) {
+                              $cdom = delete $kv{domain};
        
-                           # this is not rfc-like and not netscape-like. go figure.
-                           my $ndots = $cdom =~ y/.//;
-                           next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
-                        } else {
-                           $cdom = $uhost;
+                              $cdom =~ s/^\.?/./; # make sure it starts with a "."
+
+                              next if $cdom =~ /\.$/;
+          
+                              # this is not rfc-like and not netscape-like. go figure.
+                              my $ndots = $cdom =~ y/.//;
+                              next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
+                           } else {
+                              $cdom = $uhost;
+                           }
+       
+                           # store it
+                           $arg{cookie_jar}{version} = 1;
+                           $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
+
+                           redo if /\G\s*,/gc;
                         }
-    
-                        # store it
-                        $arg{cookie_jar}{version} = 1;
-                        $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
-
-                        redo if /\G\s*,/gc;
                      }
-                  }
 
-                  if ($redirect && exists $hdr{location}) {
-                     # we ignore any errors, as it is very common to receive
-                     # Content-Length != 0 but no actual body
-                     # we also access %hdr, as $_[1] might be an erro
-                     http_request (
-                        $method  => $hdr{location},
-                        %arg,
-                        recurse  => $recurse - 1,
-                        Redirect => \@_,
-                        $cb);
-                  } else {
-                     $cb->($_[0], $_[1]);
-                  }
-               };
-
-               my $len = $hdr{"content-length"};
-
-               if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
-                  $finish->(undef, { Status => 598, Reason => "Request cancelled by on_header", @pseudo });
-               } elsif (
-                  $hdr{Status} =~ /^(?:1..|[23]04)$/
-                  or $method eq "HEAD"
-                  or (defined $len && !$len)
-               ) {
-                  # no body
-                  $finish->("", \%hdr);
-               } else {
-                  # body handling, four different code paths
-                  # for want_body_handle, on_body (2x), normal (2x)
-                  # we might read too much here, but it does not matter yet (no pers. connections)
-                  if (!$redirect && $arg{want_body_handle}) {
-                     $_[0]->on_eof   (undef);
-                     $_[0]->on_error (undef);
-                     $_[0]->on_read  (undef);
-
-                     $finish->(delete $state{handle}, \%hdr);
-
-                  } elsif ($arg{on_body}) {
-                     $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
-                     if ($len) {
-                        $_[0]->on_eof (undef);
-                        $_[0]->on_read (sub {
-                           $len -= length $_[0]{rbuf};
-
-                           $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                              or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
-
-                           $len > 0
-                              or $finish->("", \%hdr);
-                        });
+                     if ($redirect && exists $hdr{location}) {
+                        # we ignore any errors, as it is very common to receive
+                        # Content-Length != 0 but no actual body
+                        # we also access %hdr, as $_[1] might be an erro
+                        http_request (
+                           $method  => $hdr{location},
+                           %arg,
+                           recurse  => $recurse - 1,
+                           Redirect => \@_,
+                           $cb);
                      } else {
-                        $_[0]->on_eof (sub {
-                           $finish->("", \%hdr);
-                        });
-                        $_[0]->on_read (sub {
-                           $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                              or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
-                        });
+                        $cb->($_[0], $_[1]);
                      }
-                  } else {
-                     $_[0]->on_eof (undef);
+                  };
 
-                     if ($len) {
+                  my $len = $hdr{"content-length"};
+
+                  if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
+                     $finish->(undef, { Status => 598, Reason => "Request cancelled by on_header", @pseudo });
+                  } elsif (
+                     $hdr{Status} =~ /^(?:1..|[23]04)$/
+                     or $method eq "HEAD"
+                     or (defined $len && !$len)
+                  ) {
+                     # no body
+                     $finish->("", \%hdr);
+                  } else {
+                     # body handling, four different code paths
+                     # for want_body_handle, on_body (2x), normal (2x)
+                     # we might read too much here, but it does not matter yet (no pers. connections)
+                     if (!$redirect && $arg{want_body_handle}) {
+                        $_[0]->on_eof   (undef);
+                        $_[0]->on_error (undef);
+                        $_[0]->on_read  (undef);
+
+                        $finish->(delete $state{handle}, \%hdr);
+
+                     } elsif ($arg{on_body}) {
                         $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
-                        $_[0]->on_read (sub {
-                           $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), \%hdr)
-                              if $len <= length $_[0]{rbuf};
-                        });
+                        if ($len) {
+                           $_[0]->on_eof (undef);
+                           $_[0]->on_read (sub {
+                              $len -= length $_[0]{rbuf};
+
+                              $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                                 or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
+
+                              $len > 0
+                                 or $finish->("", \%hdr);
+                           });
+                        } else {
+                           $_[0]->on_eof (sub {
+                              $finish->("", \%hdr);
+                           });
+                           $_[0]->on_read (sub {
+                              $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                                 or $finish->(undef, { Status => 598, Reason => "Request cancelled by on_body", @pseudo });
+                           });
+                        }
                      } else {
-                        $_[0]->on_error (sub {
-                           ($! == Errno::EPIPE || !$!)
-                              ? $finish->(delete $_[0]{rbuf}, \%hdr)
-                              : $finish->(undef, { Status => 599, Reason => $_[2], @pseudo });
-                        });
-                        $_[0]->on_read (sub { });
+                        $_[0]->on_eof (undef);
+
+                        if ($len) {
+                           $_[0]->on_error (sub { $finish->(undef, { Status => 599, Reason => $_[2], @pseudo }) });
+                           $_[0]->on_read (sub {
+                              $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), \%hdr)
+                                 if $len <= length $_[0]{rbuf};
+                           });
+                        } else {
+                           $_[0]->on_error (sub {
+                              ($! == Errno::EPIPE || !$!)
+                                 ? $finish->(delete $_[0]{rbuf}, \%hdr)
+                                 : $finish->(undef, { Status => 599, Reason => $_[2], @pseudo });
+                           });
+                           $_[0]->on_read (sub { });
+                        }
                      }
                   }
-               }
-            });
-         };
+               });
+            };
 
-         # now handle proxy-CONNECT method
-         if ($proxy && $uscheme eq "https") {
-            # oh dear, we have to wrap it into a connect request
+            # now handle proxy-CONNECT method
+            if ($proxy && $uscheme eq "https") {
+               # oh dear, we have to wrap it into a connect request
 
-            # maybe re-use $uauthority with patched port?
-            $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012Host: $uhost\015\012\015\012");
-            $state{handle}->push_read (line => $qr_nlnl, sub {
-               $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-                  or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid proxy connect response ($_[1])", @pseudo }));
+               # maybe re-use $uauthority with patched port?
+               $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012Host: $uhost\015\012\015\012");
+               $state{handle}->push_read (line => $qr_nlnl, sub {
+                  $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
+                     or return (%state = (), $cb->(undef, { Status => 599, Reason => "Invalid proxy connect response ($_[1])", @pseudo }));
 
-               if ($2 == 200) {
-                  $rpath = $upath;
-                  &$handle_actual_request;
-               } else {
-                  %state = ();
-                  $cb->(undef, { Status => $2, Reason => $3, @pseudo });
-               }
-            });
-         } else {
-            &$handle_actual_request;
-         }
+                  if ($2 == 200) {
+                     $rpath = $upath;
+                     &$handle_actual_request;
+                  } else {
+                     %state = ();
+                     $cb->(undef, { Status => $2, Reason => $3, @pseudo });
+                  }
+               });
+            } else {
+               &$handle_actual_request;
+            }
 
-      }, $arg{on_prepare} || sub { $timeout };
+         },
+         $arg{on_prepare} || sub { $timeout }
+      );
    };
 
    defined wantarray && AnyEvent::Util::guard { %state = () }
