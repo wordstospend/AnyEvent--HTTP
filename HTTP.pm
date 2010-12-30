@@ -149,13 +149,11 @@ retries and so on, and how often to do so.
 
 =item headers => hashref
 
-The request headers to use, with the header name (I<MUST be in lowercase>)
-as key and header value as hash value.
-
-Currently, http_request> may provide its own C<host>, C<content-length>,
-C<connection> and C<cookie> headers and will provide defaults for
-C<user-agent> and C<referer> (this can be suppressed by using a value of
-C<undef> for these headers in which case they won't be sent at all).
+The request headers to use. Currently, C<http_request> may provide its
+own C<Host:>, C<Content-Length:>, C<Connection:> and C<Cookie:> headers
+and will provide defaults for C<User-Agent:> and C<Referer:> (this can be
+suppressed by using C<undef> for these headers in which case they won't be
+sent at all).
 
 =item timeout => $seconds
 

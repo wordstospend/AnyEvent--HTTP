@@ -7,8 +7,6 @@ TODO: maybe support broken Expires header?
 	- add socks4a connect example.
 	- new "tcp_connect" parameter.
         - new format_date and parse_date functions.
-        - clarify that headers argument must consist of all
-          lowercase keys.
 
 1.46 Mon Sep  6 08:29:34 CEST 2010
         - some (broken) servers differentiate between empty search parts
