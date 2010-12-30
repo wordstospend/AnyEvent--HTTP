@@ -808,6 +808,16 @@ otherwise.
 
 To clear an already-set proxy, use C<undef>.
 
+=item $date = AnyEvent::HTTP::format_date $timestamp
+
+Takes a POSIX timestamp (seconds since the epoch) and formats it as a HTTP
+Date (RFC 2616).
+
+=item $timestamp = AnyEvent::HTTP::parse_date $date
+
+Takes a HTTP Date (RFC 2616) and returns the corresponding POSIX
+timestamp, or C<undef> if the date cannot be parsed.
+
 =item $AnyEvent::HTTP::MAX_RECURSE
 
 The default value for the C<recurse> request parameter (default: C<10>).
@@ -835,6 +845,49 @@ connections. This number of can be useful for load-leveling.
 =back
 
 =cut
+
+our @month   = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+our @weekday = qw(Sun Mon Tue Wed Thu Fri Sat);
+
+sub format_date($) {
+   my ($time) = @_;
+
+   # RFC 822/1123 format
+   my ($S, $M, $H, $mday, $mon, $year, $wday, $yday, undef) = gmtime $time;
+
+   sprintf "%s, %02d %s %04d %02d:%02d:%02d GMT",
+      $weekday[$wday], $mday, $month[$mon], $year + 1900,
+      $H, $M, $S;
+}
+
+sub parse_date($) {
+   my ($date) = @_;
+
+   my ($d, $m, $y, $H, $M, $S);
+
+   if ($date =~ /^[A-Z][a-z][a-z], ([0-9][0-9]) ([A-Z][a-z][a-z]) ([0-9][0-9][0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) GMT$/) {
+      # RFC 822/1123, required by RFC 2616
+      ($d, $m, $y, $H, $M, $S) = ($1, $2, $3, $4, $5, $6);
+
+   } elsif ($date =~ /^[A-Z][a-z]+, ([0-9][0-9])-([A-Z][a-z][a-z])-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) GMT$/) {
+      # RFC 850
+      ($d, $m, $y, $H, $M, $S) = ($1, $2, $3 < 69 ? $3 + 2000 : $3 + 1900, $4, $5, $6);
+
+   } elsif ($date =~ /^[A-Z][a-z][a-z] ([A-Z][a-z][a-z]) ([0-9 ][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) ([0-9][0-9][0-9][0-9])$/) {
+      # ISO C's asctime
+      ($d, $m, $y, $H, $M, $S) = ($2, $1, $6, $3, $4, $5);
+   }
+   # other formats fail in the loop below
+
+   for (0..11) {
+      if ($m eq $month[$_]) {
+         require Time::Local;
+         return Time::Local::timegm ($S, $M, $H, $d, $_, $y);
+      }
+   }
+
+   undef
+}
 
 sub set_proxy($) {
    if (length $_[0]) {
