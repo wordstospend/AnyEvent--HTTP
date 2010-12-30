@@ -218,7 +218,8 @@ C<AnyEvent::Socket::tcp_connect> for details.
 In even rarer cases you want total control over how AnyEvent::HTTP
 establishes connections. Normally it uses L<AnyEvent::Socket::tcp_connect>
 to do this, but you can provide your own C<tcp_connect> function -
-obviously, it has to follow the same calling conventions.
+obviously, it has to follow the same calling conventions, except that it
+may always return a connection guard object.
 
 There are probably lots of weird uses for this function, starting from
 tracing the hosts C<http_request> actually tries to connect, to (inexact
@@ -849,6 +850,62 @@ sub set_proxy($) {
 eval {
    set_proxy $ENV{http_proxy};
 };
+
+=head2 SOCKS PROXIES
+
+Socks proxies are not directly supported by AnyEvent::HTTP. You can
+compile your perl to support socks, or use an external program such as
+F<socksify> (dante) or F<tsocks> to make your program use a socks proxy
+transparently.
+
+Alternatively, for AnyEvent::HTTP only, you can use your own
+C<tcp_connect> function that does the proxy handshake - here is an example
+that works with socks4a proxies:
+
+   use Errno;
+   use AnyEvent::Util;
+   use AnyEvent::Socket;
+   use AnyEvent::Handle;
+
+   # host, port and username of/for your socks4a proxy
+   my $socks_host = "10.0.0.23";
+   my $socks_port = 9050;
+   my $socks_user = "";
+
+   sub socks4a_connect {
+      my ($host, $port, $connect_cb, $prepare_cb) = @_;
+
+      my $hdl = new AnyEvent::Handle
+         connect    => [$socks_host, $socks_port],
+         on_prepare => sub { $prepare_cb->($_[0]{fh}) },
+         on_error   => sub { $connect_cb->() },
+      ;
+
+      $hdl->push_write (pack "CCnNZ*Z*", 4, 1, $port, 1, $socks_user, $host);
+
+      $hdl->push_read (chunk => 8, sub {
+         my ($hdl, $chunk) = @_;
+         my ($status, $port, $ipn) = unpack "xCna4", $chunk;
+
+         if ($status == 0x5a) {
+            $connect_cb->($hdl->{fh}, (format_address $ipn) . ":$port");
+         } else {
+            $! = Errno::ENXIO; $connect_cb->();
+         }
+      });
+
+      $hdl
+   }
+
+Use C<socks4a_connect> instead of C<tcp_connect> when doing C<http_request>s,
+possibly after switching off other proxy types:
+
+   AnyEvent::HTTP::set_proxy undef; # usually you do not want other proxies
+
+   http_get 'http://www.google.com', tcp_connect => \&socks4a_connect, sub {
+      my ($data, $headers) = @_;
+      ...
+   };
 
 =head1 SEE ALSO
 

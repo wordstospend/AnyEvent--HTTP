@@ -4,6 +4,7 @@ TODO: provide lwp_request function that takes an lwp http requets and returns a 
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 
 TODO: maybe support broken Expires header?
+	- add socks4a connect example.
 	- new "tcp_connect" parameter.
 
 1.46 Mon Sep  6 08:29:34 CEST 2010
