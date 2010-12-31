@@ -414,8 +414,8 @@ sub cookie_jar_extract($$$$) {
 }
  
 # parse set_cookie header into jar
-sub cookie_jar_set_cookie($$) {
-   my ($jar, $set_cookie) = @_;
+sub cookie_jar_set_cookie($$$) {
+   my ($jar, $set_cookie, $uhost) = @_;
 
    for ($set_cookie) {
       # parse NAME=VALUE
@@ -474,12 +474,11 @@ sub cookie_jar_set_cookie($$) {
       }
 
       # store it
-      $arg{cookie_jar}{version} = 1;
-      $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
+      $jar->{version} = 1;
+      $jar->{$cdom}{$cpath}{$name} = \%kv;
 
       redo if /\G\s*,/gc;
    }
-}
 }
 
 # continue to parse $_ for headers and place them into the arg
@@ -737,7 +736,8 @@ sub http_request($$@) {
 
                   # set-cookie processing
                   if ($arg{cookie_jar}) {
-                     cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"};
+                     cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"}, $uhost;
+                  }
 
                   if ($redirect && exists $hdr{location}) {
                      # we ignore any errors, as it is very common to receive
