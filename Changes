@@ -2,10 +2,10 @@ Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
-
 TODO: maybe support broken Expires header?
 TODO: download example
-1.5
+
+1.5  Fri Dec 31 04:47:08 CET 2010
 	- bugfix: after headers were received, if any error occured the wrong
           (server-sent) Status and Reason fields would be passed to the callback.
         - when an error occurs during transfer, preserve status/reason.

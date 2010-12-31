@@ -48,7 +48,7 @@ DESCRIPTION
         When called in void context, nothing is returned. In other contexts,
         "http_request" returns a "cancellation guard" - you have to keep the
         object at least alive until the callback get called. If the object
-        gets destroyed before the callbakc is called, the request will be
+        gets destroyed before the callback is called, the request will be
         cancelled.
 
         The callback will be called with the response body data as first
@@ -58,7 +58,10 @@ DESCRIPTION
         All the headers in that hash are lowercased. In addition to the
         response headers, the "pseudo-headers" (uppercase to avoid clashing
         with possible response headers) "HTTPVersion", "Status" and "Reason"
-        contain the three parts of the HTTP Status-Line of the same name.
+        contain the three parts of the HTTP Status-Line of the same name. If
+        an error occurs during the body phase of a request, then the
+        original "Status" and "Reason" values from the header are available
+        as "OrigStatus" and "OrigReason".
 
         The pseudo-header "URL" contains the actual URL (which can differ
         from the requested URL when following redirects - for example, you
@@ -162,6 +165,20 @@ DESCRIPTION
             (e.g. it has to provide a timeout). See the description for the
             $prepare_cb argument of "AnyEvent::Socket::tcp_connect" for
             details.
+
+        tcp_connect => $callback->($host, $service, $connect_cb,
+        $prepare_cb)
+            In even rarer cases you want total control over how
+            AnyEvent::HTTP establishes connections. Normally it uses
+            AnyEvent::Socket::tcp_connect to do this, but you can provide
+            your own "tcp_connect" function - obviously, it has to follow
+            the same calling conventions, except that it may always return a
+            connection guard object.
+
+            There are probably lots of weird uses for this function,
+            starting from tracing the hosts "http_request" actually tries to
+            connect, to (inexact but fast) host => IP address caching or
+            even socks protocol support.
 
         on_header => $callback->($headers)
             When specified, this callback will be called with the header
@@ -274,6 +291,14 @@ DESCRIPTION
 
         To clear an already-set proxy, use "undef".
 
+    $date = AnyEvent::HTTP::format_date $timestamp
+        Takes a POSIX timestamp (seconds since the epoch) and formats it as
+        a HTTP Date (RFC 2616).
+
+    $timestamp = AnyEvent::HTTP::parse_date $date
+        Takes a HTTP Date (RFC 2616) and returns the corresponding POSIX
+        timestamp, or "undef" if the date cannot be parsed.
+
     $AnyEvent::HTTP::MAX_RECURSE
         The default value for the "recurse" request parameter (default: 10).
 
@@ -296,6 +321,61 @@ DESCRIPTION
         currently running requests, but the number of currently open and
         non-idle TCP connections. This number of can be useful for
         load-leveling.
+
+  SOCKS PROXIES
+    Socks proxies are not directly supported by AnyEvent::HTTP. You can
+    compile your perl to support socks, or use an external program such as
+    socksify (dante) or tsocks to make your program use a socks proxy
+    transparently.
+
+    Alternatively, for AnyEvent::HTTP only, you can use your own
+    "tcp_connect" function that does the proxy handshake - here is an
+    example that works with socks4a proxies:
+
+       use Errno;
+       use AnyEvent::Util;
+       use AnyEvent::Socket;
+       use AnyEvent::Handle;
+
+       # host, port and username of/for your socks4a proxy
+       my $socks_host = "10.0.0.23";
+       my $socks_port = 9050;
+       my $socks_user = "";
+
+       sub socks4a_connect {
+          my ($host, $port, $connect_cb, $prepare_cb) = @_;
+
+          my $hdl = new AnyEvent::Handle
+             connect    => [$socks_host, $socks_port],
+             on_prepare => sub { $prepare_cb->($_[0]{fh}) },
+             on_error   => sub { $connect_cb->() },
+          ;
+
+          $hdl->push_write (pack "CCnNZ*Z*", 4, 1, $port, 1, $socks_user, $host);
+
+          $hdl->push_read (chunk => 8, sub {
+             my ($hdl, $chunk) = @_;
+             my ($status, $port, $ipn) = unpack "xCna4", $chunk;
+
+             if ($status == 0x5a) {
+                $connect_cb->($hdl->{fh}, (format_address $ipn) . ":$port");
+             } else {
+                $! = Errno::ENXIO; $connect_cb->();
+             }
+          });
+
+          $hdl
+       }
+
+    Use "socks4a_connect" instead of "tcp_connect" when doing
+    "http_request"s, possibly after switching off other proxy types:
+
+       AnyEvent::HTTP::set_proxy undef; # usually you do not want other proxies
+
+       http_get 'http://www.google.com', tcp_connect => \&socks4a_connect, sub {
+          my ($data, $headers) = @_;
+          ...
+       };
 
 SEE ALSO
     AnyEvent.
