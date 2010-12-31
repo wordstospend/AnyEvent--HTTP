@@ -4,9 +4,16 @@ TODO: provide lwp_request function that takes an lwp http requets and returns a 
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 
 TODO: maybe support broken Expires header?
+TODO: download example
+1.5
+	- bugfix: after headers were received, if any error occured the wrong
+          (server-sent) Status and Reason fields would be passed to the callback.
+        - when an error occurs during transfer, preserve status/reason.
 	- add socks4a connect example.
 	- new "tcp_connect" parameter.
         - new format_date and parse_date functions.
+        - diagnose unexpected eof as such when the length is known.
+        - add 205 to the responses without body.
 
 1.46 Mon Sep  6 08:29:34 CEST 2010
         - some (broken) servers differentiate between empty search parts
