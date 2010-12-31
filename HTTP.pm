@@ -96,8 +96,8 @@ object at least alive until the callback get called. If the object gets
 destroyed before the callback is called, the request will be cancelled.
 
 The callback will be called with the response body data as first argument
-(or C<undef> if an error occured), and a hash-ref with response headers as
-second argument.
+(or C<undef> if an error occured), and a hash-ref with response headers
+(and trailers) as second argument.
 
 All the headers in that hash are lowercased. In addition to the response
 headers, the "pseudo-headers" (uppercase to avoid clashing with possible
@@ -152,11 +152,11 @@ retries and so on, and how often to do so.
 
 =item headers => hashref
 
-The request headers to use. Currently, C<http_request> may provide its
-own C<Host:>, C<Content-Length:>, C<Connection:> and C<Cookie:> headers
-and will provide defaults for C<User-Agent:> and C<Referer:> (this can be
-suppressed by using C<undef> for these headers in which case they won't be
-sent at all).
+The request headers to use. Currently, C<http_request> may provide its own
+C<Host:>, C<Content-Length:>, C<Connection:> and C<Cookie:> headers and
+will provide defaults for C<TE:>, C<Referer:> and C<User-Agent:> (this can
+be suppressed by using C<undef> for these headers in which case they won't
+be sent at all).
 
 =item timeout => $seconds
 
@@ -176,7 +176,7 @@ HTTPS.
 
 =item body => $string
 
-The request body, usually empty. Will be-sent as-is (future versions of
+The request body, usually empty. Will be sent as-is (future versions of
 this module might offer more options).
 
 =item cookie_jar => $hash_ref
@@ -242,6 +242,10 @@ This callback is useful, among other things, to quickly reject unwanted
 content, which, if it is supposed to be rare, can be faster than first
 doing a C<HEAD> request.
 
+The downside is that cancelling the request makes it impossible to re-use
+the connection. Also, the C<on_header> callback will not receive any
+trailer (headers sent after the response body).
+
 Example: cancel the request unless the content-type is "text/html".
 
    on_header => sub {
@@ -257,6 +261,9 @@ string instead of the body data.
 It has to return either true (in which case AnyEvent::HTTP will continue),
 or false, in which case AnyEvent::HTTP will cancel the download (and call
 the completion callback with an error code of C<598>).
+
+The downside to cancelling the request is that it makes it impossible to
+re-use the connection.
 
 This callback is useful when the data is too large to be held in memory
 (so the callback writes it to a file) or when only some information should
@@ -292,14 +299,15 @@ that doesn't solve your problem in a better way.
 
 =back
 
-Example: make a simple HTTP GET request for http://www.nethype.de/
+Example: do a simple HTTP GET request for http://www.nethype.de/ and print
+the response body.
 
    http_request GET => "http://www.nethype.de/", sub {
       my ($body, $hdr) = @_;
       print "$body\n";
    };
 
-Example: make a HTTP HEAD request on https://www.google.com/, use a
+Example: do a HTTP HEAD request on https://www.google.com/, use a
 timeout of 30 seconds.
 
    http_request
@@ -312,7 +320,7 @@ timeout of 30 seconds.
       }
    ;
 
-Example: make another simple HTTP GET request, but immediately try to
+Example: do another simple HTTP GET request, but immediately try to
 cancel it.
 
    my $request = http_request GET => "http://www.nethype.de/", sub {
@@ -488,8 +496,8 @@ sub http_request($$@) {
    $hdr{"content-length"} = length $arg{body}
       if length $arg{body} || $method ne "GET";
 
-   $hdr{connection} = "close TE";
-   $hdr{te}         = "trailers" unless exists $hdr{te};
+   $hdr{connection} = "close TE"; #1.1
+   $hdr{te}         = "trailers" unless exists $hdr{te}; #1.1
 
    my %state = (connect_guard => 1);
 
@@ -535,8 +543,6 @@ sub http_request($$@) {
 #               --$KA_COUNT{$_[1]}
 #            };
 #            $hdr{connection} = "keep-alive";
-#         } else {
-#            delete $hdr{connection};
 #         }
 
          $state{handle}->starttls ("connect") if $rscheme eq "https";
@@ -559,14 +565,20 @@ sub http_request($$@) {
             %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
 
             # status line and headers
-            $state{handle}->push_read (line => $qr_nlnl, sub {
-               my $keepalive = pop;
-
+            $state{read_response} = sub {
                for ("$_[1]") {
                   y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
                   /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/igxc
                      or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid server response" }));
+
+                  # 100 Continue handling
+                  # should not happen as we don't send expect: 100-continue,
+                  # but we handle it just in case.
+                  # since we send the request body regardless, if we get an error
+                  # we are out of-sync, which we currently do NOT handle correctly.
+                  return $state{handle}->push_read (line => $qr_nlnl, $state{read_response})
+                     if $2 eq 100;
 
                   push @pseudo,
                      HTTPVersion => $1,
@@ -616,6 +628,8 @@ sub http_request($$@) {
                }
 
                my $finish = sub { # ($data, $err_status, $err_reason[, $keepalive])
+                  my $keepalive = pop;
+
                   $state{handle}->destroy if $state{handle};
                   %state = ();
 
@@ -714,7 +728,8 @@ sub http_request($$@) {
 
                      $finish->(delete $state{handle});
 
-                  } elsif ($hdr{"transfer-encoding"} =~ /chunked/) {
+                  } elsif ($hdr{"transfer-encoding"} =~ /\bchunked\b/i) {
+                     my $cl = 0;
                      my $body = undef;
                      my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
 
@@ -727,7 +742,9 @@ sub http_request($$@) {
                         my $len = hex $1;
 
                         if ($len) {
-                           $_[0]->push_read (chunk => hex $1, sub {
+                           $cl += $len;
+
+                           $_[0]->push_read (chunk => $len, sub {
                               $on_body->($_[1], \%hdr)
                                  or return $finish->(undef, 598 => "Request cancelled by on_body");
 
@@ -738,6 +755,8 @@ sub http_request($$@) {
                               });
                            });
                         } else {
+                           $hdr{"content-length"} ||= $cl;
+
                            $_[0]->push_read (line => $qr_nlnl, sub {
                               if (length $_[1]) {
                                  for ("$_[1]") {
@@ -798,7 +817,9 @@ sub http_request($$@) {
                      }
                   }
                }
-            });
+            };
+
+            $state{handle}->push_read (line => $qr_nlnl, $state{read_response});
          };
 
          # now handle proxy-CONNECT method

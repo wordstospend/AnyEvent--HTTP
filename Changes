@@ -5,6 +5,8 @@ TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 TODO: maybe support broken Expires header?
 TODO: download example
 
+	- hopefully full HTTP/1.1 support.
+
 1.5  Fri Dec 31 04:47:08 CET 2010
 	- bugfix: after headers were received, if any error occured the wrong
           (server-sent) Status and Reason fields would be passed to the callback.
