@@ -354,6 +354,31 @@ sub _get_slot($$) {
    _slot_schedule $_[0];
 }
 
+# continue to parse $_ for headers and place them into the arg
+sub parse_hdr() {
+   my %hdr;
+
+   # things seen, not parsed:
+   # p3pP="NON CUR OTPi OUR NOR UNI"
+
+   $hdr{lc $1} .= ",$2"
+      while /\G
+            ([^:\000-\037]*):
+            [\011\040]*
+            ((?: [^\012]+ | \012[\011\040] )*)
+            \012
+         /gxc;
+
+   /\G$/
+     or return;
+
+   # remove the "," prefix we added to all headers above
+   substr $_, 0, 1, ""
+      for values %hdr;
+
+   \%hdr
+}
+
 our $qr_nlnl = qr{(?<![^\012])\015?\012};
 
 our $TLS_CTX_LOW  = { cache => 1, sslv2 => 1 };
@@ -457,11 +482,14 @@ sub http_request($$@) {
    }
 
    # leave out fragment and query string, just a heuristic
-   $hdr{referer}      ||= "$uscheme://$uauthority$upath" unless exists $hdr{referer};
-   $hdr{"user-agent"} ||= $USERAGENT                     unless exists $hdr{"user-agent"};
+   $hdr{referer}      = "$uscheme://$uauthority$upath" unless exists $hdr{referer};
+   $hdr{"user-agent"} = $USERAGENT                     unless exists $hdr{"user-agent"};
 
    $hdr{"content-length"} = length $arg{body}
       if length $arg{body} || $method ne "GET";
+
+   $hdr{connection} = "close TE";
+   $hdr{te}         = "trailers" unless exists $hdr{te};
 
    my %state = (connect_guard => 1);
 
@@ -508,7 +536,7 @@ sub http_request($$@) {
 #            };
 #            $hdr{connection} = "keep-alive";
 #         } else {
-            delete $hdr{connection};
+#            delete $hdr{connection};
 #         }
 
          $state{handle}->starttls ("connect") if $rscheme eq "https";
@@ -519,7 +547,7 @@ sub http_request($$@) {
 
             # send request
             $state{handle}->push_write (
-               "$method $rpath HTTP/1.0\015\012"
+               "$method $rpath HTTP/1.1\015\012"
                . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
                . "\015\012"
                . (delete $arg{body})
@@ -537,7 +565,7 @@ sub http_request($$@) {
                for ("$_[1]") {
                   y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
-                  /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )? \015?\012/igxc
+                  /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/igxc
                      or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid server response" }));
 
                   push @pseudo,
@@ -546,27 +574,11 @@ sub http_request($$@) {
                      Reason      => $3,
                   ;
 
-                  # things seen, not parsed:
-                  # p3pP="NON CUR OTPi OUR NOR UNI"
+                  my $hdr = parse_hdr
+                     or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Garbled response headers" }));
 
-                  $hdr{lc $1} .= ",$2"
-                     while /\G
-                           ([^:\000-\037]*):
-                           [\011\040]*
-                           ((?: [^\012]+ | \012[\011\040] )*)
-                           \012
-                        /gxc;
-
-                  /\G$/
-                    or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Garbled response headers" }));
+                  %hdr = (%$hdr, @pseudo);
                }
-
-               # remove the "," prefix we added to all headers above
-               substr $_, 0, 1, ""
-                  for values %hdr;
-
-               # patch in all pseudo headers
-               %hdr = (%hdr, @pseudo);
 
                # redirect handling
                # microsoft and other shitheads don't give a shit for following standards,
@@ -689,9 +701,12 @@ sub http_request($$@) {
                   # no body
                   $finish->("", undef, undef, 1);
                } else {
-                  # body handling, four different code paths
-                  # for want_body_handle, on_body (2x), normal (2x)
-                  # we might read too much here, but it does not matter yet (no pipelining)
+                  # body handling, many different code paths
+                  # - no body expected
+                  # - want_body_handle
+                  # - te chunked
+                  # - 2x length known (with or without on_body)
+                  # - 2x length not known (with or without on_body)
                   if (!$redirect && $arg{want_body_handle}) {
                      $_[0]->on_eof   (undef);
                      $_[0]->on_error (undef);
@@ -699,14 +714,59 @@ sub http_request($$@) {
 
                      $finish->(delete $state{handle});
 
+                  } elsif ($hdr{"transfer-encoding"} =~ /chunked/) {
+                     my $body = undef;
+                     my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
+
+                     $_[0]->on_error (sub { $finish->(undef, 599 => $_[2]) });
+
+                     my $read_chunk; $read_chunk = sub {
+                        warn $_[1];#d#
+                        $_[1] =~ /^([0-9a-fA-F]+)/
+                           or $finish->(undef, 599 => "Garbled chunked transfer encoding");
+
+                        my $len = hex $1;
+
+                        if ($len) {
+                           $_[0]->push_read (chunk => hex $1, sub {
+                              $on_body->($_[1], \%hdr)
+                                 or return $finish->(undef, 598 => "Request cancelled by on_body");
+
+                              $_[0]->push_read (line => sub {
+                                 length $_[1]
+                                    and return $finish->(undef, 599 => "Garbled chunked transfer encoding");
+                                 $_[0]->push_read (line => $read_chunk);
+                              });
+                           });
+                        } else {
+                           $_[0]->push_read (line => $qr_nlnl, sub {
+                              if (length $_[1]) {
+                                 for ("$_[1]") {
+                                    y/\015//d; # weed out any \015, as they show up in the weirdest of places.
+
+                                    my $hdr = parse_hdr
+                                       or return $finish->(undef, 599 => "Garbled response trailers");
+
+                                    %hdr = (%hdr, %$hdr);
+                                 }
+                              }
+
+                              $finish->($body, undef, undef, 1);
+                           });
+                        }
+                     };
+
+                     $_[0]->push_read (line => $read_chunk);
+
                   } elsif ($arg{on_body}) {
                      $_[0]->on_error (sub { $finish->(undef, 599 => $_[2]) });
+
                      if ($len) {
                         $_[0]->on_read (sub {
                            $len -= length $_[0]{rbuf};
 
                            $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                              or $finish->(undef, 598 => "Request cancelled by on_body");
+                              or return $finish->(undef, 598 => "Request cancelled by on_body");
 
                            $len > 0
                               or $finish->("", undef, undef, 1);
