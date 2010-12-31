@@ -2,10 +2,16 @@ Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: http://efl20.com/wp-register.php refresh-header, instead of location
-TODO: maybe support broken Expires header?
 TODO: download example
 
-	- hopefully full HTTP/1.1 support.
+	- hopefully fully upgraded to HTTP/1.1.
+        - much improved cookie implementation:
+           - add special exception to parse broken expires= keys in
+             set-cookie headers.
+           - lowercase cookie parameter names for improved compatibility.
+           - support the max-age cookie parameter, used if expires is missing.
+           - properly implement cookie expiry.
+           - support cookie dates in parse_date.
 
 1.5  Fri Dec 31 04:47:08 CET 2010
 	- bugfix: after headers were received, if any error occured the wrong

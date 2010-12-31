@@ -185,18 +185,18 @@ Passing this parameter enables (simplified) cookie-processing, loosely
 based on the original netscape specification.
 
 The C<$hash_ref> must be an (initially empty) hash reference which will
-get updated automatically. It is possible to save the cookie_jar to
+get updated automatically. It is possible to save the cookie jar to
 persistent storage with something like JSON or Storable, but this is not
-recommended, as expiry times are currently being ignored.
+recommended, as session-only cookies might survive longer than expected.
 
-Note that this cookie implementation is not of very high quality, nor
-meant to be complete. If you want complete cookie management you have to
-do that on your own. C<cookie_jar> is meant as a quick fix to get some
-cookie-using sites working. Cookies are a privacy disaster, do not use
-them unless required to.
+Note that this cookie implementation is not meant to be complete. If
+you want complete cookie management you have to do that on your
+own. C<cookie_jar> is meant as a quick fix to get some cookie-using sites
+working. Cookies are a privacy disaster, do not use them unless required
+to.
 
 When cookie processing is enabled, the C<Cookie:> and C<Set-Cookie:>
-headers will be ste and handled by this module, otherwise they will be
+headers will be set and handled by this module, otherwise they will be
 left untouched.
 
 =item tls_ctx => $scheme | $tls_ctx
@@ -454,7 +454,7 @@ sub http_request($$@) {
  
       my @cookie;
  
-      while (my ($chost, $v) = each %$jar) {
+      while (my ($chost, $paths) = each %$jar) {
          if ($chost =~ /^\./) {
             next unless $chost eq substr $uhost, -length $chost;
          } elsif ($chost =~ /\./) {
@@ -462,15 +462,23 @@ sub http_request($$@) {
          } else {
             next;
          }
- 
-         while (my ($cpath, $v) = each %$v) {
+
+         while (my ($cpath, $cookies) = each %$paths) {
             next unless $cpath eq substr $upath, 0, length $cpath;
  
-            while (my ($k, $v) = each %$v) {
-               next if $uscheme ne "https" && exists $v->{secure};
-               my $value = $v->{value};
+            while (my ($cookie, $kv) = each %$cookies) {
+               next if $uscheme ne "https" && exists $kv->{secure};
+
+               if (exists $kv->{expires}) {
+                  if (AE::now > parse_date ($kv->{expires})) {
+                     delete $cookies->{$cookie};
+                     next;
+                  }
+               }
+
+               my $value = $kv->{value};
                $value =~ s/([\\"])/\\$1/g;
-               push @cookie, "$k=\"$value\"";
+               push @cookie, "$cookie=\"$value\"";
             }
          }
       }
@@ -648,16 +656,29 @@ sub http_request($$@) {
                         # parse NAME=VALUE
                         my @kv;
 
-                        while (/\G\s* ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )/gcxs) {
-                           my $name = $1;
-                           my $value = $3;
+                        while (
+                           m{
+                              \G\s*
+                              (?:
+                                 expires \s*=\s* ([A-Z][a-z][a-z],\ [^,;]+)
+                                 | ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )
+                              )
+                           }gcxsi
+                        ) {
+                           my $name = $2;
+                           my $value = $4;
 
-                           unless ($value) {
-                              $value = $2;
+                           unless (defined $name) {
+                              # expires
+                              $name  = "expires";
+                              $value = $1;
+                           } elsif (!defined $value) {
+                              # quoted
+                              $value = $3;
                               $value =~ s/\\(.)/$1/gs;
                            }
 
-                           push @kv, $name => $value;
+                           push @kv, lc $name, $value;
 
                            last unless /\G\s*;/gc;
                         }
@@ -666,6 +687,9 @@ sub http_request($$@) {
 
                         my $name = shift @kv;
                         my %kv = (value => shift @kv, @kv);
+
+                        $kv{expires} ||= format_date (AE::now + $kv{"max-age"})
+                           if exists $kv{"max-age"};
 
                         my $cdom;
                         my $cpath = (delete $kv{path}) || "/";
@@ -905,8 +929,9 @@ Date (RFC 2616).
 
 =item $timestamp = AnyEvent::HTTP::parse_date $date
 
-Takes a HTTP Date (RFC 2616) and returns the corresponding POSIX
-timestamp, or C<undef> if the date cannot be parsed.
+Takes a HTTP Date (RFC 2616) or a Cookie date (netscape cookie spec) and
+returns the corresponding POSIX timestamp, or C<undef> if the date cannot
+be parsed.
 
 =item $AnyEvent::HTTP::MAX_RECURSE
 
@@ -955,8 +980,10 @@ sub parse_date($) {
 
    my ($d, $m, $y, $H, $M, $S);
 
-   if ($date =~ /^[A-Z][a-z][a-z], ([0-9][0-9]) ([A-Z][a-z][a-z]) ([0-9][0-9][0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) GMT$/) {
-      # RFC 822/1123, required by RFC 2616
+   if ($date =~ /^[A-Z][a-z][a-z], ([0-9][0-9])[\- ]([A-Z][a-z][a-z])[\- ]([0-9][0-9][0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) GMT$/) {
+      # RFC 822/1123, required by RFC 2616 (with " ")
+      # cookie dates (with "-")
+
       ($d, $m, $y, $H, $M, $S) = ($1, $2, $3, $4, $5, $6);
 
    } elsif ($date =~ /^[A-Z][a-z]+, ([0-9][0-9])-([A-Z][a-z][a-z])-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) GMT$/) {
