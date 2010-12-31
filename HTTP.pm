@@ -721,7 +721,6 @@ sub http_request($$@) {
                      $_[0]->on_error (sub { $finish->(undef, 599 => $_[2]) });
 
                      my $read_chunk; $read_chunk = sub {
-                        warn $_[1];#d#
                         $_[1] =~ /^([0-9a-fA-F]+)/
                            or $finish->(undef, 599 => "Garbled chunked transfer encoding");
 
