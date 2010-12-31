@@ -366,6 +366,52 @@ sub _get_slot($$) {
    _slot_schedule $_[0];
 }
 
+sub cookie_jar_extract($$$$) {
+   my ($jar, $uscheme, $uhost, $upath) = @_;
+
+   %$jar = () if $jar->{version} != 1;
+
+   my @cookies;
+
+   while (my ($chost, $paths) = each %$jar) {
+      next unless ref $paths;
+
+      if ($chost =~ /^\./) {
+         next unless $chost eq substr $uhost, -length $chost;
+      } elsif ($chost =~ /\./) {
+         next unless $chost eq $uhost;
+      } else {
+         next;
+      }
+
+      while (my ($cpath, $cookies) = each %$paths) {
+         next unless $cpath eq substr $upath, 0, length $cpath;
+
+         while (my ($cookie, $kv) = each %$cookies) {
+            next if $uscheme ne "https" && exists $kv->{secure};
+
+            if (exists $kv->{expires}) {
+               if (AE::now > parse_date ($kv->{expires})) {
+                  delete $cookies->{$cookie};
+                  next;
+               }
+            }
+
+            my $value = $kv->{value};
+
+            if ($value =~ /[=;,[:space:]]/) {
+               $value =~ s/([\\"])/\\$1/g;
+               $value = "\"$value\"";
+            }
+
+            push @cookies, "$cookie=$value";
+         }
+      }
+   }
+
+   \@cookies
+}
+ 
 # continue to parse $_ for headers and place them into the arg
 sub parse_hdr() {
    my %hdr;
@@ -450,41 +496,10 @@ sub http_request($$@) {
 
    # cookie processing
    if (my $jar = $arg{cookie_jar}) {
-      %$jar = () if $jar->{version} != 1;
- 
-      my @cookie;
- 
-      while (my ($chost, $paths) = each %$jar) {
-         if ($chost =~ /^\./) {
-            next unless $chost eq substr $uhost, -length $chost;
-         } elsif ($chost =~ /\./) {
-            next unless $chost eq $uhost;
-         } else {
-            next;
-         }
+      my $cookies = cookie_jar_extract $jar, $uscheme, $uhost, $upath;
 
-         while (my ($cpath, $cookies) = each %$paths) {
-            next unless $cpath eq substr $upath, 0, length $cpath;
- 
-            while (my ($cookie, $kv) = each %$cookies) {
-               next if $uscheme ne "https" && exists $kv->{secure};
-
-               if (exists $kv->{expires}) {
-                  if (AE::now > parse_date ($kv->{expires})) {
-                     delete $cookies->{$cookie};
-                     next;
-                  }
-               }
-
-               my $value = $kv->{value};
-               $value =~ s/([\\"])/\\$1/g;
-               push @cookie, "$cookie=\"$value\"";
-            }
-         }
-      }
- 
-      $hdr{cookie} = join "; ", @cookie
-         if @cookie;
+      $hdr{cookie} = join "; ", @$cookies
+         if @$cookies;
    }
 
    my ($rhost, $rport, $rscheme, $rpath); # request host, port, path

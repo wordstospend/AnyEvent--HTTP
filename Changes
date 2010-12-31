@@ -8,6 +8,8 @@ TODO: download example
         - much improved cookie implementation:
            - add special exception to parse broken expires= keys in
              set-cookie headers.
+           - do not quote cookie values when not strictly necessary, to
+             improve compatibility with broken servers.
            - lowercase cookie parameter names for improved compatibility.
            - support the max-age cookie parameter, used if expires is missing.
            - properly implement cookie expiry.
