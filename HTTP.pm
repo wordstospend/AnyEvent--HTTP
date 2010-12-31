@@ -724,7 +724,7 @@ sub http_request($$@) {
                }
 
                my $finish = sub { # ($data, $err_status, $err_reason[, $keepalive])
-                  my $keepalive = pop;
+                  my $may_keep_alive = $_[3];
 
                   $state{handle}->destroy if $state{handle};
                   %state = ();
