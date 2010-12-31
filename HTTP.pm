@@ -154,9 +154,9 @@ retries and so on, and how often to do so.
 
 The request headers to use. Currently, C<http_request> may provide its own
 C<Host:>, C<Content-Length:>, C<Connection:> and C<Cookie:> headers and
-will provide defaults for C<TE:>, C<Referer:> and C<User-Agent:> (this can
-be suppressed by using C<undef> for these headers in which case they won't
-be sent at all).
+will provide defaults at least for C<TE:>, C<Referer:> and C<User-Agent:>
+(this can be suppressed by using C<undef> for these headers in which case
+they won't be sent at all).
 
 =item timeout => $seconds
 
@@ -194,6 +194,10 @@ meant to be complete. If you want complete cookie management you have to
 do that on your own. C<cookie_jar> is meant as a quick fix to get some
 cookie-using sites working. Cookies are a privacy disaster, do not use
 them unless required to.
+
+When cookie processing is enabled, the C<Cookie:> and C<Set-Cookie:>
+headers will be ste and handled by this module, otherwise they will be
+left untouched.
 
 =item tls_ctx => $scheme | $tls_ctx
 
