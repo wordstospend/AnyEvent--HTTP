@@ -10,6 +10,8 @@ TODO: download example
              set-cookie headers.
            - do not quote cookie values when not strictly necessary, to
              improve compatibility with broken servers.
+           - accept and send lots of invalid cookie values exactly as
+             they were received - this should not impact valid values.
            - lowercase cookie parameter names for improved compatibility.
            - support the max-age cookie parameter, used if expires is missing.
            - properly implement cookie expiry.

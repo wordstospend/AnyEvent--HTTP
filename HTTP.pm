@@ -366,6 +366,7 @@ sub _get_slot($$) {
    _slot_schedule $_[0];
 }
 
+# extract cookies from jar
 sub cookie_jar_extract($$$$) {
    my ($jar, $uscheme, $uhost, $upath) = @_;
 
@@ -412,6 +413,75 @@ sub cookie_jar_extract($$$$) {
    \@cookies
 }
  
+# parse set_cookie header into jar
+sub cookie_jar_set_cookie($$) {
+   my ($jar, $set_cookie) = @_;
+
+   for ($set_cookie) {
+      # parse NAME=VALUE
+      my @kv;
+
+      while (
+         m{
+            \G\s*
+            (?:
+               expires \s*=\s* ([A-Z][a-z][a-z],\ [^,;]+)
+               | ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )
+            )
+         }gcxsi
+      ) {
+         my $name = $2;
+         my $value = $4;
+
+         unless (defined $name) {
+            # expires
+            $name  = "expires";
+            $value = $1;
+         } elsif (!defined $value) {
+            # quoted
+            $value = $3;
+            $value =~ s/\\(.)/$1/gs;
+         }
+
+         push @kv, lc $name, $value;
+
+         last unless /\G\s*;/gc;
+      }
+
+      last unless @kv;
+
+      my $name = shift @kv;
+      my %kv = (value => shift @kv, @kv);
+
+      $kv{expires} ||= format_date (AE::now + $kv{"max-age"})
+         if exists $kv{"max-age"};
+
+      my $cdom;
+      my $cpath = (delete $kv{path}) || "/";
+
+      if (exists $kv{domain}) {
+         $cdom = delete $kv{domain};
+
+         $cdom =~ s/^\.?/./; # make sure it starts with a "."
+
+         next if $cdom =~ /\.$/;
+
+         # this is not rfc-like and not netscape-like. go figure.
+         my $ndots = $cdom =~ y/.//;
+         next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
+      } else {
+         $cdom = $uhost;
+      }
+
+      # store it
+      $arg{cookie_jar}{version} = 1;
+      $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
+
+      redo if /\G\s*,/gc;
+   }
+}
+}
+
 # continue to parse $_ for headers and place them into the arg
 sub parse_hdr() {
    my %hdr;
@@ -667,69 +737,7 @@ sub http_request($$@) {
 
                   # set-cookie processing
                   if ($arg{cookie_jar}) {
-                     for ($hdr{"set-cookie"}) {
-                        # parse NAME=VALUE
-                        my @kv;
-
-                        while (
-                           m{
-                              \G\s*
-                              (?:
-                                 expires \s*=\s* ([A-Z][a-z][a-z],\ [^,;]+)
-                                 | ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )
-                              )
-                           }gcxsi
-                        ) {
-                           my $name = $2;
-                           my $value = $4;
-
-                           unless (defined $name) {
-                              # expires
-                              $name  = "expires";
-                              $value = $1;
-                           } elsif (!defined $value) {
-                              # quoted
-                              $value = $3;
-                              $value =~ s/\\(.)/$1/gs;
-                           }
-
-                           push @kv, lc $name, $value;
-
-                           last unless /\G\s*;/gc;
-                        }
-
-                        last unless @kv;
-
-                        my $name = shift @kv;
-                        my %kv = (value => shift @kv, @kv);
-
-                        $kv{expires} ||= format_date (AE::now + $kv{"max-age"})
-                           if exists $kv{"max-age"};
-
-                        my $cdom;
-                        my $cpath = (delete $kv{path}) || "/";
-
-                        if (exists $kv{domain}) {
-                           $cdom = delete $kv{domain};
-    
-                           $cdom =~ s/^\.?/./; # make sure it starts with a "."
-
-                           next if $cdom =~ /\.$/;
-       
-                           # this is not rfc-like and not netscape-like. go figure.
-                           my $ndots = $cdom =~ y/.//;
-                           next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
-                        } else {
-                           $cdom = $uhost;
-                        }
-    
-                        # store it
-                        $arg{cookie_jar}{version} = 1;
-                        $arg{cookie_jar}{$cdom}{$cpath}{$name} = \%kv;
-
-                        redo if /\G\s*,/gc;
-                     }
-                  }
+                     cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"};
 
                   if ($redirect && exists $hdr{location}) {
                      # we ignore any errors, as it is very common to receive
