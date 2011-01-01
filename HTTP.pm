@@ -435,11 +435,13 @@ sub cookie_jar_set_cookie($$$) {
       # parse NAME=VALUE
       my @kv;
 
+      # expires is not http-compliant in the original cookie-spec,
+      # we support the official date format and some extensions
       while (
          m{
             \G\s*
             (?:
-               expires \s*=\s* ([A-Z][a-z][a-z],\ [^,;]+)
+               expires \s*=\s* ([A-Z][a-z][a-z]+,\ [^,;]+)
                | ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )
             )
          }gcxsi
@@ -965,9 +967,9 @@ Date (RFC 2616).
 
 =item $timestamp = AnyEvent::HTTP::parse_date $date
 
-Takes a HTTP Date (RFC 2616) or a Cookie date (netscape cookie spec) and
-returns the corresponding POSIX timestamp, or C<undef> if the date cannot
-be parsed.
+Takes a HTTP Date (RFC 2616) or a Cookie date (netscape cookie spec) or a
+bunch of minor variations of those, and returns the corresponding POSIX
+timestamp, or C<undef> if the date cannot be parsed.
 
 =item $AnyEvent::HTTP::MAX_RECURSE
 
@@ -1016,17 +1018,17 @@ sub parse_date($) {
 
    my ($d, $m, $y, $H, $M, $S);
 
-   if ($date =~ /^[A-Z][a-z][a-z], ([0-9][0-9])[\- ]([A-Z][a-z][a-z])[\- ]([0-9][0-9][0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) GMT$/) {
+   if ($date =~ /^[A-Z][a-z][a-z]+, ([0-9][0-9]?)[\- ]([A-Z][a-z][a-z])[\- ]([0-9][0-9][0-9][0-9]) ([0-9][0-9]?):([0-9][0-9]?):([0-9][0-9]?) GMT$/) {
       # RFC 822/1123, required by RFC 2616 (with " ")
       # cookie dates (with "-")
 
       ($d, $m, $y, $H, $M, $S) = ($1, $2, $3, $4, $5, $6);
 
-   } elsif ($date =~ /^[A-Z][a-z]+, ([0-9][0-9])-([A-Z][a-z][a-z])-([0-9][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) GMT$/) {
+   } elsif ($date =~ /^[A-Z][a-z][a-z]+, ([0-9][0-9]?)-([A-Z][a-z][a-z])-([0-9][0-9]) ([0-9][0-9]?):([0-9][0-9]?):([0-9][0-9]?) GMT$/) {
       # RFC 850
       ($d, $m, $y, $H, $M, $S) = ($1, $2, $3 < 69 ? $3 + 2000 : $3 + 1900, $4, $5, $6);
 
-   } elsif ($date =~ /^[A-Z][a-z][a-z] ([A-Z][a-z][a-z]) ([0-9 ][0-9]) ([0-9][0-9]):([0-9][0-9]):([0-9][0-9]) ([0-9][0-9][0-9][0-9])$/) {
+   } elsif ($date =~ /^[A-Z][a-z][a-z]+ ([A-Z][a-z][a-z]) ([0-9 ]?[0-9]) ([0-9][0-9]?):([0-9][0-9]?):([0-9][0-9]?) ([0-9][0-9][0-9][0-9])$/) {
       # ISO C's asctime
       ($d, $m, $y, $H, $M, $S) = ($2, $1, $6, $3, $4, $5);
    }
