@@ -610,8 +610,6 @@ sub http_request($$@) {
                return $cb->(undef, { @pseudo, Status => 599, Reason => $err });
             };
 
-         pop; # free memory, save a tree
-
          return unless delete $state{connect_guard};
 
          # get handle
