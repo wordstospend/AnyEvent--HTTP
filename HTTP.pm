@@ -124,9 +124,23 @@ If the server sends a header multiple times, then their contents will be
 joined together with a comma (C<,>), as per the HTTP spec.
 
 If an internal error occurs, such as not being able to resolve a hostname,
-then C<$data> will be C<undef>, C<< $headers->{Status} >> will be C<59x>
-(usually C<599>) and the C<Reason> pseudo-header will contain an error
-message.
+then C<$data> will be C<undef>, C<< $headers->{Status} >> will be
+C<590>-C<599> and the C<Reason> pseudo-header will contain an error
+message. Currently the following status codes are used:
+
+=over 4
+
+=item 595 - errors during connection etsbalishment, proxy handshake.
+
+=item 596 - errors during TLS negotiation, request sending and header processing.
+
+=item 597 - errors during body receive or processing.
+
+=item 598 - user aborted request in C<on_header> or C<on_body>.
+
+=item 599 - other, usually nonretryable, errors (garbled URL etc.).
+
+=back
 
 A typical callback might look like this:
 
@@ -602,12 +616,14 @@ sub http_request($$@) {
 
       return unless $state{connect_guard};
 
+      my $ae_error = 595; # connecting
+
       my $connect_cb = sub {
          $state{fh} = shift
             or do {
                my $err = "$!";
                %state = ();
-               return $cb->(undef, { @pseudo, Status => 599, Reason => $err });
+               return $cb->(undef, { @pseudo, Status => $ae_error, Reason => $err });
             };
 
          return unless delete $state{connect_guard};
@@ -621,11 +637,11 @@ sub http_request($$@) {
             timeout  => $timeout,
             on_error => sub {
                %state = ();
-               $cb->(undef, { @pseudo, Status => 599, Reason => $_[2] });
+               $cb->(undef, { @pseudo, Status => $ae_error, Reason => $_[2] });
             },
             on_eof   => sub {
                %state = ();
-               $cb->(undef, { @pseudo, Status => 599, Reason => "Unexpected end-of-file" });
+               $cb->(undef, { @pseudo, Status => $ae_error, Reason => "Unexpected end-of-file" });
             },
          ;
 
@@ -643,6 +659,8 @@ sub http_request($$@) {
 
          # handle actual, non-tunneled, request
          my $handle_actual_request = sub {
+            $ae_error = 596; # request phase
+
             $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
 
             # send request
@@ -752,6 +770,8 @@ sub http_request($$@) {
                   }
                };
 
+               $ae_error = 597; # body phase
+
                my $len = $hdr{"content-length"};
 
                if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
@@ -782,11 +802,9 @@ sub http_request($$@) {
                      my $body = undef;
                      my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
 
-                     $_[0]->on_error (sub { $finish->(undef, 599 => $_[2]) });
-
                      my $read_chunk; $read_chunk = sub {
                         $_[1] =~ /^([0-9a-fA-F]+)/
-                           or $finish->(undef, 599 => "Garbled chunked transfer encoding");
+                           or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
 
                         my $len = hex $1;
 
@@ -799,7 +817,7 @@ sub http_request($$@) {
 
                               $_[0]->push_read (line => sub {
                                  length $_[1]
-                                    and return $finish->(undef, 599 => "Garbled chunked transfer encoding");
+                                    and return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
                                  $_[0]->push_read (line => $read_chunk);
                               });
                            });
@@ -812,7 +830,7 @@ sub http_request($$@) {
                                     y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
                                     my $hdr = parse_hdr
-                                       or return $finish->(undef, 599 => "Garbled response trailers");
+                                       or return $finish->(undef, $ae_error => "Garbled response trailers");
 
                                     %hdr = (%hdr, %$hdr);
                                  }
@@ -826,8 +844,6 @@ sub http_request($$@) {
                      $_[0]->push_read (line => $read_chunk);
 
                   } elsif ($arg{on_body}) {
-                     $_[0]->on_error (sub { $finish->(undef, 599 => $_[2]) });
-
                      if ($len) {
                         $_[0]->on_read (sub {
                            $len -= length $_[0]{rbuf};
@@ -851,7 +867,6 @@ sub http_request($$@) {
                      $_[0]->on_eof (undef);
 
                      if ($len) {
-                        $_[0]->on_error (sub { $finish->(undef, 599 => $_[2]) });
                         $_[0]->on_read (sub {
                            $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), undef, undef, 1)
                               if $len <= length $_[0]{rbuf};
@@ -860,7 +875,7 @@ sub http_request($$@) {
                         $_[0]->on_error (sub {
                            ($! == Errno::EPIPE || !$!)
                               ? $finish->(delete $_[0]{rbuf})
-                              : $finish->(undef, 599 => $_[2]);
+                              : $finish->(undef, $ae_error => $_[2]);
                         });
                         $_[0]->on_read (sub { });
                      }
