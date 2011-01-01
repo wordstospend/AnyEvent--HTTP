@@ -134,9 +134,9 @@ message. Currently the following status codes are used:
 
 =item 596 - errors during TLS negotiation, request sending and header processing.
 
-=item 597 - errors during body receive or processing.
+=item 597 - errors during body receiving or processing.
 
-=item 598 - user aborted request in C<on_header> or C<on_body>.
+=item 598 - user aborted request via C<on_header> or C<on_body>.
 
 =item 599 - other, usually nonretryable, errors (garbled URL etc.).
 
