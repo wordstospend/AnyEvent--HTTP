@@ -8,6 +8,8 @@ TODO: download example
         - use more differentiated status 59x codes.
         - ignore leading zeroes in http version.
         - much improved cookie implementation:
+           - properly implement cookie expiry (for new cookies).
+           - new function to expire cookies and sessions: cookie_jar_expire.
            - add special exception to parse broken expires= keys in
              set-cookie headers.
            - do not quote cookie values when not strictly necessary, to
@@ -16,8 +18,7 @@ TODO: download example
              they were received - this should not impact valid values.
            - lowercase cookie parameter names for improved compatibility.
            - support the max-age cookie parameter, used if expires is missing.
-           - properly implement cookie expiry.
-           - support cookie dates in parse_date.
+           - support cookie dates (and a few others) in parse_date.
 
 1.5  Fri Dec 31 04:47:08 CET 2010
 	- bugfix: after headers were received, if any error occured the wrong

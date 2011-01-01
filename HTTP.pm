@@ -198,14 +198,16 @@ this module might offer more options).
 Passing this parameter enables (simplified) cookie-processing, loosely
 based on the original netscape specification.
 
-The C<$hash_ref> must be an (initially empty) hash reference which will
-get updated automatically. It is possible to save the cookie jar to
-persistent storage with something like JSON or Storable, but this is not
-recommended, as session-only cookies might survive longer than expected.
+The C<$hash_ref> must be an (initially empty) hash reference which
+will get updated automatically. It is possible to save the cookie jar
+to persistent storage with something like JSON or Storable - see the
+C<AnyEvent::HTTP::cookie_jar_expire> function if you wish to remove
+expired or session-only cookies, and also for documentation on the format
+of the cookie jar.
 
 Note that this cookie implementation is not meant to be complete. If
 you want complete cookie management you have to do that on your
-own. C<cookie_jar> is meant as a quick fix to get some cookie-using sites
+own. C<cookie_jar> is meant as a quick fix to get most cookie-using sites
 working. Cookies are a privacy disaster, do not use them unless required
 to.
 
@@ -380,6 +382,38 @@ sub _get_slot($$) {
    _slot_schedule $_[0];
 }
 
+#############################################################################
+
+# expire cookies
+sub cookie_jar_expire($;$) {
+   my ($jar, $session_end) = @_;
+
+   %$jar = () if $jar->{version} != 1;
+
+   my $anow = AE::now;
+
+   while (my ($chost, $paths) = each %$jar) {
+      next unless ref $paths;
+
+      while (my ($cpath, $cookies) = each %$paths) {
+         while (my ($cookie, $kv) = each %$cookies) {
+            if (exists $kv->{_expires}) {
+               delete $cookies->{$cookie}
+                  if $anow > $kv->{_expires};
+            } elsif ($session_end) {
+               delete $cookies->{$cookie};
+            }
+         }
+
+         delete $paths->{$cpath}
+            unless %$cookies;
+      }
+
+      delete $jar->{$chost}
+         unless %$paths;
+   }
+}
+ 
 # extract cookies from jar
 sub cookie_jar_extract($$$$) {
    my ($jar, $uscheme, $uhost, $upath) = @_;
@@ -405,11 +439,9 @@ sub cookie_jar_extract($$$$) {
          while (my ($cookie, $kv) = each %$cookies) {
             next if $uscheme ne "https" && exists $kv->{secure};
 
-            if (exists $kv->{expires}) {
-               if (AE::now > parse_date ($kv->{expires})) {
-                  delete $cookies->{$cookie};
-                  next;
-               }
+            if (exists $kv->{_expires} and AE::now > $kv->{_expires}) {
+               delete $cookies->{$cookie};
+               next;
             }
 
             my $value = $kv->{value};
@@ -428,8 +460,11 @@ sub cookie_jar_extract($$$$) {
 }
  
 # parse set_cookie header into jar
-sub cookie_jar_set_cookie($$$) {
-   my ($jar, $set_cookie, $uhost) = @_;
+sub cookie_jar_set_cookie($$$$) {
+   my ($jar, $set_cookie, $uhost, $date) = @_;
+
+   my $anow = int AE::now;
+   my $snow; # server-now
 
    for ($set_cookie) {
       # parse NAME=VALUE
@@ -469,8 +504,14 @@ sub cookie_jar_set_cookie($$$) {
       my $name = shift @kv;
       my %kv = (value => shift @kv, @kv);
 
-      $kv{expires} ||= format_date (AE::now + $kv{"max-age"})
-         if exists $kv{"max-age"};
+      if (exists $kv{"max-age"}) {
+         $kv{_expires} = $anow + delete $kv{"max-age"};
+      } elsif (exists $kv{expires}) {
+         $snow ||= parse_date ($date) || $anow;
+         $kv{_expires} = $anow + (parse_date (delete $kv{expires}) - $snow);
+      } else {
+         delete $kv{_expires};
+      }
 
       my $cdom;
       my $cpath = (delete $kv{path}) || "/";
@@ -754,7 +795,7 @@ sub http_request($$@) {
 
                   # set-cookie processing
                   if ($arg{cookie_jar}) {
-                     cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"}, $uhost;
+                     cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"}, $uhost, $hdr{date};
                   }
 
                   if ($redirect && exists $hdr{location}) {
@@ -959,6 +1000,45 @@ string of the form C<http://host:port> (optionally C<https:...>), croaks
 otherwise.
 
 To clear an already-set proxy, use C<undef>.
+
+=item AnyEvent::HTTP::cookie_jar_expire $jar[, $session_end]
+
+Remove all cookies from the cookie jar that have been expired. If
+C<$session_end> is given and true, then additionally remove all session
+cookies.
+
+You should call this function (with a true C<$session_end>) before you
+save cookies to disk, and you should call this function after loading them
+again. If you have a long-running program you can additonally call this
+function from time to time.
+
+A cookie jar is initially an empty hash-reference that is managed by this
+module. It's format is subject to change, but currently it is like this:
+
+The key C<version> has to contain C<1>, otherwise the hash gets
+emptied. All other keys are hostnames or IP addresses pointing to
+hash-references. The key for these inner hash references is the
+server path for which this cookie is meant, and the values are again
+hash-references. The keys of those hash-references is the cookie name, and
+the value, you guessed it, is another hash-reference, this time with the
+key-value pairs from the cookie, except for C<expires> and C<max-age>,
+which have been replaced by a C<_expires> key that contains the cookie
+expiry timestamp.
+
+Here is an example of a cookie jar with a single cookie, so you have a
+chance of understanding the above paragraph:
+
+   {
+      version    => 1,
+      "10.0.0.1" => {
+         "/" => {
+            "mythweb_id" => {
+              _expires => 1293917923,
+              value    => "ooRung9dThee3ooyXooM1Ohm",
+            },
+         },
+      },
+   }
 
 =item $date = AnyEvent::HTTP::format_date $timestamp
 
