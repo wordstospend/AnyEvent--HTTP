@@ -663,7 +663,7 @@ sub http_request($$@) {
                for ("$_[1]") {
                   y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
-                  /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/igxc
+                  /^HTTP\/0*([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/gxci
                      or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid server response" }));
 
                   # 100 Continue handling
@@ -708,7 +708,7 @@ sub http_request($$@) {
                   my $status = $hdr{Status};
 
                   # industry standard is to redirect POST as GET for
-                  # 301, 302 and 303, in contrast to http/1.0 and 1.1.
+                  # 301, 302 and 303, in contrast to HTTP/1.0 and 1.1.
                   # also, the UA should ask the user for 301 and 307 and POST,
                   # industry standard seems to be to simply follow.
                   # we go with the industry standard.

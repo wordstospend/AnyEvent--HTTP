@@ -5,6 +5,7 @@ TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 TODO: download example
 
 	- hopefully fully upgraded to HTTP/1.1.
+        - ignore leading zeroes in http version.
         - much improved cookie implementation:
            - add special exception to parse broken expires= keys in
              set-cookie headers.
