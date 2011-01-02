@@ -6,9 +6,6 @@ TODO: download example
 
 	- hopefully fully upgraded to HTTP/1.1.
         - use more differentiated status 59x codes.
-        - ignore leading zeroes in http version.
-        - handle spaces in content-length headers more gracefully.
-	- use common::sense.
         - much improved cookie implementation:
            - properly implement cookie expiry (for new cookies).
            - new function to expire cookies and sessions: cookie_jar_expire.
@@ -22,6 +19,11 @@ TODO: download example
            - support the max-age cookie parameter, used if expires is missing.
            - support cookie dates (and a few others) in parse_date.
            - suppoer value-less parameters (e.g. secure, httponly).
+        - do not send Host: header in a proxy CONNECT request.
+	- use common::sense.
+        - lowercase hostnames and schemes.
+        - ignore leading zeroes in http version.
+        - handle spaces in content-length headers more gracefully.
 
 1.5  Fri Dec 31 04:47:08 CET 2010
 	- bugfix: after headers were received, if any error occured the wrong

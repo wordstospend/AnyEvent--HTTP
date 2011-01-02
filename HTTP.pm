@@ -417,8 +417,6 @@ sub cookie_jar_expire($;$) {
 sub cookie_jar_extract($$$$) {
    my ($jar, $uscheme, $uhost, $upath) = @_;
 
-   $uhost = lc $uhost;
-
    %$jar = () if $jar->{version} != 1;
 
    my @cookies;
@@ -610,7 +608,7 @@ sub http_request($$@) {
    $uauthority =~ /^(?: .*\@ )? ([^\@:]+) (?: : (\d+) )?$/x
       or return $cb->(undef, { @pseudo, Status => 599, Reason => "Unparsable URL" });
 
-   my $uhost = $1;
+   my $uhost = lc $1;
    $uport = $2 if defined $2;
 
    $hdr{host} = defined $2 ? "$uhost:$2" : "$uhost"
@@ -639,6 +637,9 @@ sub http_request($$@) {
       # don't support https requests over https-proxy transport,
       # can't be done with tls as spec'ed, unless you double-encrypt.
       $rscheme = "http" if $uscheme eq "https" && $rscheme eq "https";
+
+      $rhost   = lc $rhost;
+      $rscheme = lc $rscheme;
    } else {
       ($rhost, $rport, $rscheme, $rpath) = ($uhost, $uport, $uscheme, $upath);
    }
@@ -934,7 +935,7 @@ sub http_request($$@) {
             # oh dear, we have to wrap it into a connect request
 
             # maybe re-use $uauthority with patched port?
-            $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012Host: $uhost\015\012\015\012");
+            $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012\015\012");
             $state{handle}->push_read (line => $qr_nlnl, sub {
                $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
                   or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid proxy connect response ($_[1])" }));
