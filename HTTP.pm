@@ -59,7 +59,7 @@ our $PERSISTENT_TIMEOUT =   2;
 our $TIMEOUT            = 300;
 
 # changing these is evil
-our $MAX_PERSISTENT_PER_HOST = 0;
+our $MAX_PERSISTENT_PER_HOST = 2;
 our $MAX_PER_HOST       = 4;
 
 our $PROXY;
@@ -656,270 +656,265 @@ sub http_request($$@) {
 
    my %state = (connect_guard => 1);
 
-   _get_slot $uhost, sub {
-      $state{slot_guard} = shift;
+   my $ae_error = 595; # connecting
 
-      return unless $state{connect_guard};
+   # handle actual, non-tunneled, request
+   my $handle_actual_request = sub {
+      $ae_error = 596; # request phase
 
-      my $ae_error = 595; # connecting
+      $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
 
-      # handle actual, non-tunneled, request
-      my $handle_actual_request = sub {
-         $ae_error = 596; # request phase
+      # send request
+      $state{handle}->push_write (
+         "$method $rpath HTTP/1.1\015\012"
+         . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
+         . "\015\012"
+         . (delete $arg{body})
+      );
 
-         $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
+      # return if error occured during push_write()
+      return unless %state;
 
-         # send request
-         $state{handle}->push_write (
-            "$method $rpath HTTP/1.1\015\012"
-            . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
-            . "\015\012"
-            . (delete $arg{body})
-         );
+      %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
 
-         # return if error occured during push_write()
-         return unless %state;
+      # status line and headers
+      $state{read_response} = sub {
+         for ("$_[1]") {
+            y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
-         %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
+            /^HTTP\/0*([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/gxci
+               or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid server response" }));
 
-         # status line and headers
-         $state{read_response} = sub {
-            for ("$_[1]") {
-               y/\015//d; # weed out any \015, as they show up in the weirdest of places.
+            # 100 Continue handling
+            # should not happen as we don't send expect: 100-continue,
+            # but we handle it just in case.
+            # since we send the request body regardless, if we get an error
+            # we are out of-sync, which we currently do NOT handle correctly.
+            return $state{handle}->push_read (line => $qr_nlnl, $state{read_response})
+               if $2 eq 100;
 
-               /^HTTP\/0*([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/gxci
-                  or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid server response" }));
+            push @pseudo,
+               HTTPVersion => $1,
+               Status      => $2,
+               Reason      => $3,
+            ;
 
-               # 100 Continue handling
-               # should not happen as we don't send expect: 100-continue,
-               # but we handle it just in case.
-               # since we send the request body regardless, if we get an error
-               # we are out of-sync, which we currently do NOT handle correctly.
-               return $state{handle}->push_read (line => $qr_nlnl, $state{read_response})
-                  if $2 eq 100;
+            my $hdr = parse_hdr
+               or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Garbled response headers" }));
 
-               push @pseudo,
-                  HTTPVersion => $1,
-                  Status      => $2,
-                  Reason      => $3,
-               ;
+            %hdr = (%$hdr, @pseudo);
+         }
 
-               my $hdr = parse_hdr
-                  or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Garbled response headers" }));
+         # redirect handling
+         # microsoft and other shitheads don't give a shit for following standards,
+         # try to support some common forms of broken Location headers.
+         if ($hdr{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
+            $hdr{location} =~ s/^\.\/+//;
 
-               %hdr = (%$hdr, @pseudo);
+            my $url = "$rscheme://$uhost:$uport";
+
+            unless ($hdr{location} =~ s/^\///) {
+               $url .= $upath;
+               $url =~ s/\/[^\/]*$//;
             }
 
-            # redirect handling
-            # microsoft and other shitheads don't give a shit for following standards,
-            # try to support some common forms of broken Location headers.
-            if ($hdr{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
-               $hdr{location} =~ s/^\.\/+//;
+            $hdr{location} = "$url/$hdr{location}";
+         }
 
-               my $url = "$rscheme://$uhost:$uport";
+         my $redirect;
 
-               unless ($hdr{location} =~ s/^\///) {
-                  $url .= $upath;
-                  $url =~ s/\/[^\/]*$//;
-               }
+         if ($recurse) {
+            my $status = $hdr{Status};
 
-               $hdr{location} = "$url/$hdr{location}";
+            # industry standard is to redirect POST as GET for
+            # 301, 302 and 303, in contrast to HTTP/1.0 and 1.1.
+            # also, the UA should ask the user for 301 and 307 and POST,
+            # industry standard seems to be to simply follow.
+            # we go with the industry standard.
+            if ($status == 301 or $status == 302 or $status == 303) {
+               # HTTP/1.1 is unclear on how to mutate the method
+               $method = "GET" unless $method eq "HEAD";
+               $redirect = 1;
+            } elsif ($status == 307) {
+               $redirect = 1;
+            }
+         }
+
+         my $finish = sub { # ($data, $err_status, $err_reason[, $keepalive])
+            my $may_keep_alive = $_[3];
+
+            $state{handle}->destroy if $state{handle};
+            %state = ();
+
+            if (defined $_[1]) {
+               $hdr{OrigStatus} = $hdr{Status}; $hdr{Status} = $_[1];
+               $hdr{OrigReason} = $hdr{Reason}; $hdr{Reason} = $_[2];
             }
 
-            my $redirect;
-
-            if ($recurse) {
-               my $status = $hdr{Status};
-
-               # industry standard is to redirect POST as GET for
-               # 301, 302 and 303, in contrast to HTTP/1.0 and 1.1.
-               # also, the UA should ask the user for 301 and 307 and POST,
-               # industry standard seems to be to simply follow.
-               # we go with the industry standard.
-               if ($status == 301 or $status == 302 or $status == 303) {
-                  # HTTP/1.1 is unclear on how to mutate the method
-                  $method = "GET" unless $method eq "HEAD";
-                  $redirect = 1;
-               } elsif ($status == 307) {
-                  $redirect = 1;
-               }
+            # set-cookie processing
+            if ($arg{cookie_jar}) {
+               cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"}, $uhost, $hdr{date};
             }
 
-            my $finish = sub { # ($data, $err_status, $err_reason[, $keepalive])
-               my $may_keep_alive = $_[3];
-
-               $state{handle}->destroy if $state{handle};
-               %state = ();
-
-               if (defined $_[1]) {
-                  $hdr{OrigStatus} = $hdr{Status}; $hdr{Status} = $_[1];
-                  $hdr{OrigReason} = $hdr{Reason}; $hdr{Reason} = $_[2];
-               }
-
-               # set-cookie processing
-               if ($arg{cookie_jar}) {
-                  cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"}, $uhost, $hdr{date};
-               }
-
-               if ($redirect && exists $hdr{location}) {
-                  # we ignore any errors, as it is very common to receive
-                  # Content-Length != 0 but no actual body
-                  # we also access %hdr, as $_[1] might be an erro
-                  http_request (
-                     $method  => $hdr{location},
-                     %arg,
-                     recurse  => $recurse - 1,
-                     Redirect => [$_[0], \%hdr],
-                     $cb);
-               } else {
-                  $cb->($_[0], \%hdr);
-               }
-            };
-
-            $ae_error = 597; # body phase
-
-            my $len = $hdr{"content-length"};
-
-            # body handling, many different code paths
-            # - no body expected
-            # - want_body_handle
-            # - te chunked
-            # - 2x length known (with or without on_body)
-            # - 2x length not known (with or without on_body)
-            if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
-               $finish->(undef, 598 => "Request cancelled by on_header");
-            } elsif (
-               $hdr{Status} =~ /^(?:1..|204|205|304)$/
-               or $method eq "HEAD"
-               or (defined $len && $len == 0) # == 0, not !, because "0   " is true
-            ) {
-               # no body
-               $finish->("", undef, undef, 1);
-
-            } elsif (!$redirect && $arg{want_body_handle}) {
-               $_[0]->on_eof   (undef);
-               $_[0]->on_error (undef);
-               $_[0]->on_read  (undef);
-
-               $finish->(delete $state{handle});
-
-            } elsif ($hdr{"transfer-encoding"} =~ /\bchunked\b/i) {
-               my $cl = 0;
-               my $body = undef;
-               my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
-
-               $state{read_chunk} = sub {
-                  $_[1] =~ /^([0-9a-fA-F]+)/
-                     or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
-
-                  my $len = hex $1;
-
-                  if ($len) {
-                     $cl += $len;
-
-                     $_[0]->push_read (chunk => $len, sub {
-                        $on_body->($_[1], \%hdr)
-                           or return $finish->(undef, 598 => "Request cancelled by on_body");
-
-                        $_[0]->push_read (line => sub {
-                           length $_[1]
-                              and return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
-                           $_[0]->push_read (line => $state{read_chunk});
-                        });
-                     });
-                  } else {
-                     $hdr{"content-length"} ||= $cl;
-
-                     $_[0]->push_read (line => $qr_nlnl, sub {
-                        if (length $_[1]) {
-                           for ("$_[1]") {
-                              y/\015//d; # weed out any \015, as they show up in the weirdest of places.
-
-                              my $hdr = parse_hdr
-                                 or return $finish->(undef, $ae_error => "Garbled response trailers");
-
-                              %hdr = (%hdr, %$hdr);
-                           }
-                        }
-
-                        $finish->($body, undef, undef, 1);
-                     });
-                  }
-               };
-
-               $_[0]->push_read (line => $state{read_chunk});
-
-            } elsif ($arg{on_body}) {
-               if (defined $len) {
-                  $_[0]->on_read (sub {
-                     $len -= length $_[0]{rbuf};
-
-                     $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                        or return $finish->(undef, 598 => "Request cancelled by on_body");
-
-                     $len > 0
-                        or $finish->("", undef, undef, 1);
-                  });
-               } else {
-                  $_[0]->on_eof (sub {
-                     $finish->("");
-                  });
-                  $_[0]->on_read (sub {
-                     $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                        or $finish->(undef, 598 => "Request cancelled by on_body");
-                  });
-               }
+            if ($redirect && exists $hdr{location}) {
+               # we ignore any errors, as it is very common to receive
+               # Content-Length != 0 but no actual body
+               # we also access %hdr, as $_[1] might be an erro
+               http_request (
+                  $method  => $hdr{location},
+                  %arg,
+                  recurse  => $recurse - 1,
+                  Redirect => [$_[0], \%hdr],
+                  $cb);
             } else {
-               $_[0]->on_eof (undef);
-
-               if (defined $len) {
-                  $_[0]->on_read (sub {
-                     $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), undef, undef, 1)
-                        if $len <= length $_[0]{rbuf};
-                  });
-               } else {
-                  $_[0]->on_error (sub {
-                     ($! == Errno::EPIPE || !$!)
-                        ? $finish->(delete $_[0]{rbuf})
-                        : $finish->(undef, $ae_error => $_[2]);
-                  });
-                  $_[0]->on_read (sub { });
-               }
+               $cb->($_[0], \%hdr);
             }
          };
 
-         $state{handle}->push_read (line => $qr_nlnl, $state{read_response});
-      };
+         $ae_error = 597; # body phase
 
-      my $connect_cb = sub {
-         $state{fh} = shift
-            or do {
-               my $err = "$!";
-               %state = ();
-               return $cb->(undef, { @pseudo, Status => $ae_error, Reason => $err });
+         my $len = $hdr{"content-length"};
+
+         # body handling, many different code paths
+         # - no body expected
+         # - want_body_handle
+         # - te chunked
+         # - 2x length known (with or without on_body)
+         # - 2x length not known (with or without on_body)
+         if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
+            $finish->(undef, 598 => "Request cancelled by on_header");
+         } elsif (
+            $hdr{Status} =~ /^(?:1..|204|205|304)$/
+            or $method eq "HEAD"
+            or (defined $len && $len == 0) # == 0, not !, because "0   " is true
+         ) {
+            # no body
+            $finish->("", undef, undef, 1);
+
+         } elsif (!$redirect && $arg{want_body_handle}) {
+            $_[0]->on_eof   (undef);
+            $_[0]->on_error (undef);
+            $_[0]->on_read  (undef);
+
+            $finish->(delete $state{handle});
+
+         } elsif ($hdr{"transfer-encoding"} =~ /\bchunked\b/i) {
+            my $cl = 0;
+            my $body = undef;
+            my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
+
+            $state{read_chunk} = sub {
+               $_[1] =~ /^([0-9a-fA-F]+)/
+                  or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
+
+               my $len = hex $1;
+
+               if ($len) {
+                  $cl += $len;
+
+                  $_[0]->push_read (chunk => $len, sub {
+                     $on_body->($_[1], \%hdr)
+                        or return $finish->(undef, 598 => "Request cancelled by on_body");
+
+                     $_[0]->push_read (line => sub {
+                        length $_[1]
+                           and return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
+                        $_[0]->push_read (line => $state{read_chunk});
+                     });
+                  });
+               } else {
+                  $hdr{"content-length"} ||= $cl;
+
+                  $_[0]->push_read (line => $qr_nlnl, sub {
+                     if (length $_[1]) {
+                        for ("$_[1]") {
+                           y/\015//d; # weed out any \015, as they show up in the weirdest of places.
+
+                           my $hdr = parse_hdr
+                              or return $finish->(undef, $ae_error => "Garbled response trailers");
+
+                           %hdr = (%hdr, %$hdr);
+                        }
+                     }
+
+                     $finish->($body, undef, undef, 1);
+                  });
+               }
             };
 
-         return unless delete $state{connect_guard};
+            $_[0]->push_read (line => $state{read_chunk});
 
-         # get handle
-         $state{handle} = new AnyEvent::Handle
-            fh       => $state{fh},
-            peername => $rhost,
-            tls_ctx  => $arg{tls_ctx},
-            # these need to be reconfigured on keepalive handles
-            timeout  => $timeout,
-            on_error => sub {
-               %state = ();
-               $cb->(undef, { @pseudo, Status => $ae_error, Reason => $_[2] });
-            },
-            on_eof   => sub {
-               %state = ();
-               $cb->(undef, { @pseudo, Status => $ae_error, Reason => "Unexpected end-of-file" });
-            },
-         ;
+         } elsif ($arg{on_body}) {
+            if (defined $len) {
+               $_[0]->on_read (sub {
+                  $len -= length $_[0]{rbuf};
 
-         # limit the number of persistent connections
-         # keepalive not yet supported
+                  $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                     or return $finish->(undef, 598 => "Request cancelled by on_body");
+
+                  $len > 0
+                     or $finish->("", undef, undef, 1);
+               });
+            } else {
+               $_[0]->on_eof (sub {
+                  $finish->("");
+               });
+               $_[0]->on_read (sub {
+                  $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                     or $finish->(undef, 598 => "Request cancelled by on_body");
+               });
+            }
+         } else {
+            $_[0]->on_eof (undef);
+
+            if (defined $len) {
+               $_[0]->on_read (sub {
+                  $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), undef, undef, 1)
+                     if $len <= length $_[0]{rbuf};
+               });
+            } else {
+               $_[0]->on_error (sub {
+                  ($! == Errno::EPIPE || !$!)
+                     ? $finish->(delete $_[0]{rbuf})
+                     : $finish->(undef, $ae_error => $_[2]);
+               });
+               $_[0]->on_read (sub { });
+            }
+         }
+      };
+
+      $state{handle}->push_read (line => $qr_nlnl, $state{read_response});
+   };
+
+   my $connect_cb = sub {
+      $state{fh} = shift
+         or do {
+            my $err = "$!";
+            %state = ();
+            return $cb->(undef, { @pseudo, Status => $ae_error, Reason => $err });
+         };
+
+      return unless delete $state{connect_guard};
+
+      # get handle
+      $state{handle} = new AnyEvent::Handle
+         fh       => $state{fh},
+         peername => $rhost,
+         tls_ctx  => $arg{tls_ctx},
+         # these need to be reconfigured on keepalive handles
+         timeout  => $timeout,
+         on_error => sub {
+            %state = ();
+            $cb->(undef, { @pseudo, Status => $ae_error, Reason => $_[2] });
+         },
+         on_eof   => sub {
+            %state = ();
+            $cb->(undef, { @pseudo, Status => $ae_error, Reason => "Unexpected end-of-file" });
+         },
+      ;
+
+      # limit the number of persistent connections
+      # keepalive not yet supported
 #         if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
 #            ++$KA_COUNT{$_[1]};
 #            $state{handle}{ka_count_guard} = AnyEvent::Util::guard {
@@ -928,30 +923,35 @@ sub http_request($$@) {
 #            $hdr{connection} = "keep-alive";
 #         }
 
-         $state{handle}->starttls ("connect") if $rscheme eq "https";
+      $state{handle}->starttls ("connect") if $rscheme eq "https";
 
-         # now handle proxy-CONNECT method
-         if ($proxy && $uscheme eq "https") {
-            # oh dear, we have to wrap it into a connect request
+      # now handle proxy-CONNECT method
+      if ($proxy && $uscheme eq "https") {
+         # oh dear, we have to wrap it into a connect request
 
-            # maybe re-use $uauthority with patched port?
-            $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012\015\012");
-            $state{handle}->push_read (line => $qr_nlnl, sub {
-               $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-                  or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid proxy connect response ($_[1])" }));
+         # maybe re-use $uauthority with patched port?
+         $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012\015\012");
+         $state{handle}->push_read (line => $qr_nlnl, sub {
+            $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
+               or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid proxy connect response ($_[1])" }));
 
-               if ($2 == 200) {
-                  $rpath = $upath;
-                  $handle_actual_request->();
-               } else {
-                  %state = ();
-                  $cb->(undef, { @pseudo, Status => $2, Reason => $3 });
-               }
-            });
-         } else {
-            $handle_actual_request->();
-         }
-      };
+            if ($2 == 200) {
+               $rpath = $upath;
+               $handle_actual_request->();
+            } else {
+               %state = ();
+               $cb->(undef, { @pseudo, Status => $2, Reason => $3 });
+            }
+         });
+      } else {
+         $handle_actual_request->();
+      }
+   };
+
+   _get_slot $uhost, sub {
+      $state{slot_guard} = shift;
+
+      return unless $state{connect_guard};
 
       my $tcp_connect = $arg{tcp_connect}
                         || do { require AnyEvent::Socket; \&AnyEvent::Socket::tcp_connect };

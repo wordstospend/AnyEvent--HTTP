@@ -1,7 +1,6 @@
 Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
-TODO: http://efl20.com/wp-register.php refresh-header, instead of location
 TODO: download example
 
 	- hopefully fully upgraded to HTTP/1.1.
