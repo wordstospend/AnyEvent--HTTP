@@ -418,6 +418,8 @@ sub cookie_jar_expire($;$) {
 sub cookie_jar_extract($$$$) {
    my ($jar, $uscheme, $uhost, $upath) = @_;
 
+   $uhost = lc $uhost;
+
    %$jar = () if $jar->{version} != 1;
 
    my @cookies;
@@ -532,7 +534,7 @@ sub cookie_jar_set_cookie($$$$) {
 
       # store it
       $jar->{version} = 1;
-      $jar->{$cdom}{$cpath}{$name} = \%kv;
+      $jar->{lc $cdom}{$cpath}{$name} = \%kv;
 
       redo if /\G\s*,/gc;
    }
