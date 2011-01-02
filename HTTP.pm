@@ -845,7 +845,7 @@ sub http_request($$@) {
                      my $body = undef;
                      my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
 
-                     my $read_chunk; $read_chunk = sub {
+                     $state{read_chunk} = sub {
                         $_[1] =~ /^([0-9a-fA-F]+)/
                            or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
 
@@ -861,7 +861,7 @@ sub http_request($$@) {
                               $_[0]->push_read (line => sub {
                                  length $_[1]
                                     and return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
-                                 $_[0]->push_read (line => $read_chunk);
+                                 $_[0]->push_read (line => $state{read_chunk});
                               });
                            });
                         } else {
@@ -884,7 +884,7 @@ sub http_request($$@) {
                         }
                      };
 
-                     $_[0]->push_read (line => $read_chunk);
+                     $_[0]->push_read (line => $state{read_chunk});
 
                   } elsif ($arg{on_body}) {
                      if ($len) {
@@ -941,14 +941,14 @@ sub http_request($$@) {
 
                if ($2 == 200) {
                   $rpath = $upath;
-                  &$handle_actual_request;
+                  $handle_actual_request->();
                } else {
                   %state = ();
                   $cb->(undef, { @pseudo, Status => $2, Reason => $3 });
                }
             });
          } else {
-            &$handle_actual_request;
+            $handle_actual_request->();
          }
       };
 
