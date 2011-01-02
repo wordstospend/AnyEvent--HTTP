@@ -779,112 +779,112 @@ sub http_request($$@) {
             $ae_error = 597; # body phase
 
             my $len = $hdr{"content-length"};
+               warn "no content $redirect x<$len>$hdr{Status}\n";#d#
 
+            # body handling, many different code paths
+            # - no body expected
+            # - want_body_handle
+            # - te chunked
+            # - 2x length known (with or without on_body)
+            # - 2x length not known (with or without on_body)
             if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
                $finish->(undef, 598 => "Request cancelled by on_header");
             } elsif (
                $hdr{Status} =~ /^(?:1..|204|205|304)$/
                or $method eq "HEAD"
-               or (defined $len && !$len)
+               or (defined $len && $len == 0) # == 0, not !, because "0   " is true
             ) {
                # no body
                $finish->("", undef, undef, 1);
-            } else {
-               # body handling, many different code paths
-               # - no body expected
-               # - want_body_handle
-               # - te chunked
-               # - 2x length known (with or without on_body)
-               # - 2x length not known (with or without on_body)
-               if (!$redirect && $arg{want_body_handle}) {
-                  $_[0]->on_eof   (undef);
-                  $_[0]->on_error (undef);
-                  $_[0]->on_read  (undef);
 
-                  $finish->(delete $state{handle});
+            } elsif (!$redirect && $arg{want_body_handle}) {
+               $_[0]->on_eof   (undef);
+               $_[0]->on_error (undef);
+               $_[0]->on_read  (undef);
 
-               } elsif ($hdr{"transfer-encoding"} =~ /\bchunked\b/i) {
-                  my $cl = 0;
-                  my $body = undef;
-                  my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
+               $finish->(delete $state{handle});
 
-                  $state{read_chunk} = sub {
-                     $_[1] =~ /^([0-9a-fA-F]+)/
-                        or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
+            } elsif ($hdr{"transfer-encoding"} =~ /\bchunked\b/i) {
+               my $cl = 0;
+               my $body = undef;
+               my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
 
-                     my $len = hex $1;
+               $state{read_chunk} = sub {
+                  $_[1] =~ /^([0-9a-fA-F]+)/
+                     or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
 
-                     if ($len) {
-                        $cl += $len;
+                  my $len = hex $1;
 
-                        $_[0]->push_read (chunk => $len, sub {
-                           $on_body->($_[1], \%hdr)
-                              or return $finish->(undef, 598 => "Request cancelled by on_body");
-
-                           $_[0]->push_read (line => sub {
-                              length $_[1]
-                                 and return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
-                              $_[0]->push_read (line => $state{read_chunk});
-                           });
-                        });
-                     } else {
-                        $hdr{"content-length"} ||= $cl;
-
-                        $_[0]->push_read (line => $qr_nlnl, sub {
-                           if (length $_[1]) {
-                              for ("$_[1]") {
-                                 y/\015//d; # weed out any \015, as they show up in the weirdest of places.
-
-                                 my $hdr = parse_hdr
-                                    or return $finish->(undef, $ae_error => "Garbled response trailers");
-
-                                 %hdr = (%hdr, %$hdr);
-                              }
-                           }
-
-                           $finish->($body, undef, undef, 1);
-                        });
-                     }
-                  };
-
-                  $_[0]->push_read (line => $state{read_chunk});
-
-               } elsif ($arg{on_body}) {
                   if ($len) {
-                     $_[0]->on_read (sub {
-                        $len -= length $_[0]{rbuf};
+                     $cl += $len;
 
-                        $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                     $_[0]->push_read (chunk => $len, sub {
+                        $on_body->($_[1], \%hdr)
                            or return $finish->(undef, 598 => "Request cancelled by on_body");
 
-                        $len > 0
-                           or $finish->("", undef, undef, 1);
+                        $_[0]->push_read (line => sub {
+                           length $_[1]
+                              and return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
+                           $_[0]->push_read (line => $state{read_chunk});
+                        });
                      });
                   } else {
-                     $_[0]->on_eof (sub {
-                        $finish->("");
-                     });
-                     $_[0]->on_read (sub {
-                        $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                           or $finish->(undef, 598 => "Request cancelled by on_body");
-                     });
-                  }
-               } else {
-                  $_[0]->on_eof (undef);
+                     $hdr{"content-length"} ||= $cl;
 
-                  if ($len) {
-                     $_[0]->on_read (sub {
-                        $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), undef, undef, 1)
-                           if $len <= length $_[0]{rbuf};
+                     $_[0]->push_read (line => $qr_nlnl, sub {
+                        if (length $_[1]) {
+                           for ("$_[1]") {
+                              y/\015//d; # weed out any \015, as they show up in the weirdest of places.
+
+                              my $hdr = parse_hdr
+                                 or return $finish->(undef, $ae_error => "Garbled response trailers");
+
+                              %hdr = (%hdr, %$hdr);
+                           }
+                        }
+
+                        $finish->($body, undef, undef, 1);
                      });
-                  } else {
-                     $_[0]->on_error (sub {
-                        ($! == Errno::EPIPE || !$!)
-                           ? $finish->(delete $_[0]{rbuf})
-                           : $finish->(undef, $ae_error => $_[2]);
-                     });
-                     $_[0]->on_read (sub { });
                   }
+               };
+
+               $_[0]->push_read (line => $state{read_chunk});
+
+            } elsif ($arg{on_body}) {
+               if (defined $len) {
+                  $_[0]->on_read (sub {
+                     $len -= length $_[0]{rbuf};
+
+                     $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                        or return $finish->(undef, 598 => "Request cancelled by on_body");
+
+                     $len > 0
+                        or $finish->("", undef, undef, 1);
+                  });
+               } else {
+                  $_[0]->on_eof (sub {
+                     $finish->("");
+                  });
+                  $_[0]->on_read (sub {
+                     $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                        or $finish->(undef, 598 => "Request cancelled by on_body");
+                  });
+               }
+            } else {
+               $_[0]->on_eof (undef);
+
+               if (defined $len) {
+                  $_[0]->on_read (sub {
+                     $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), undef, undef, 1)
+                        if $len <= length $_[0]{rbuf};
+                  });
+               } else {
+                  $_[0]->on_error (sub {
+                     ($! == Errno::EPIPE || !$!)
+                        ? $finish->(delete $_[0]{rbuf})
+                        : $finish->(undef, $ae_error => $_[2]);
+                  });
+                  $_[0]->on_read (sub { });
                }
             }
          };

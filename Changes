@@ -7,6 +7,7 @@ TODO: download example
 	- hopefully fully upgraded to HTTP/1.1.
         - use more differentiated status 59x codes.
         - ignore leading zeroes in http version.
+        - handle spaces in content-length headers more gracefully.
         - much improved cookie implementation:
            - properly implement cookie expiry (for new cookies).
            - new function to expire cookies and sessions: cookie_jar_expire.
