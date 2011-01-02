@@ -651,7 +651,7 @@ sub http_request($$@) {
    $hdr{"content-length"} = length $arg{body}
       if length $arg{body} || $method ne "GET";
 
-   $hdr{connection} = "close TE"; #1.1
+   $hdr{connection} = "close Te"; #1.1
    $hdr{te}         = "trailers" unless exists $hdr{te}; #1.1
 
    my %state = (connect_guard => 1);
