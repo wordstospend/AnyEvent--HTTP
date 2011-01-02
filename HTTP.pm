@@ -477,18 +477,18 @@ sub cookie_jar_set_cookie($$$$) {
             \G\s*
             (?:
                expires \s*=\s* ([A-Z][a-z][a-z]+,\ [^,;]+)
-               | ([^=;,[:space:]]+) \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) )
+               | ([^=;,[:space:]]+) (?: \s*=\s* (?: "((?:[^\\"]+|\\.)*)" | ([^=;,[:space:]]*) ) )?
             )
          }gcxsi
       ) {
          my $name = $2;
          my $value = $4;
 
-         unless (defined $name) {
+         if (defined $1) {
             # expires
             $name  = "expires";
             $value = $1;
-         } elsif (!defined $value) {
+         } elsif (defined $3) {
             # quoted
             $value = $3;
             $value =~ s/\\(.)/$1/gs;
@@ -661,6 +661,235 @@ sub http_request($$@) {
 
       my $ae_error = 595; # connecting
 
+      # handle actual, non-tunneled, request
+      my $handle_actual_request = sub {
+         $ae_error = 596; # request phase
+
+         $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
+
+         # send request
+         $state{handle}->push_write (
+            "$method $rpath HTTP/1.1\015\012"
+            . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
+            . "\015\012"
+            . (delete $arg{body})
+         );
+
+         # return if error occured during push_write()
+         return unless %state;
+
+         %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
+
+         # status line and headers
+         $state{read_response} = sub {
+            for ("$_[1]") {
+               y/\015//d; # weed out any \015, as they show up in the weirdest of places.
+
+               /^HTTP\/0*([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/gxci
+                  or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid server response" }));
+
+               # 100 Continue handling
+               # should not happen as we don't send expect: 100-continue,
+               # but we handle it just in case.
+               # since we send the request body regardless, if we get an error
+               # we are out of-sync, which we currently do NOT handle correctly.
+               return $state{handle}->push_read (line => $qr_nlnl, $state{read_response})
+                  if $2 eq 100;
+
+               push @pseudo,
+                  HTTPVersion => $1,
+                  Status      => $2,
+                  Reason      => $3,
+               ;
+
+               my $hdr = parse_hdr
+                  or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Garbled response headers" }));
+
+               %hdr = (%$hdr, @pseudo);
+            }
+
+            # redirect handling
+            # microsoft and other shitheads don't give a shit for following standards,
+            # try to support some common forms of broken Location headers.
+            if ($hdr{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
+               $hdr{location} =~ s/^\.\/+//;
+
+               my $url = "$rscheme://$uhost:$uport";
+
+               unless ($hdr{location} =~ s/^\///) {
+                  $url .= $upath;
+                  $url =~ s/\/[^\/]*$//;
+               }
+
+               $hdr{location} = "$url/$hdr{location}";
+            }
+
+            my $redirect;
+
+            if ($recurse) {
+               my $status = $hdr{Status};
+
+               # industry standard is to redirect POST as GET for
+               # 301, 302 and 303, in contrast to HTTP/1.0 and 1.1.
+               # also, the UA should ask the user for 301 and 307 and POST,
+               # industry standard seems to be to simply follow.
+               # we go with the industry standard.
+               if ($status == 301 or $status == 302 or $status == 303) {
+                  # HTTP/1.1 is unclear on how to mutate the method
+                  $method = "GET" unless $method eq "HEAD";
+                  $redirect = 1;
+               } elsif ($status == 307) {
+                  $redirect = 1;
+               }
+            }
+
+            my $finish = sub { # ($data, $err_status, $err_reason[, $keepalive])
+               my $may_keep_alive = $_[3];
+
+               $state{handle}->destroy if $state{handle};
+               %state = ();
+
+               if (defined $_[1]) {
+                  $hdr{OrigStatus} = $hdr{Status}; $hdr{Status} = $_[1];
+                  $hdr{OrigReason} = $hdr{Reason}; $hdr{Reason} = $_[2];
+               }
+
+               # set-cookie processing
+               if ($arg{cookie_jar}) {
+                  cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"}, $uhost, $hdr{date};
+               }
+
+               if ($redirect && exists $hdr{location}) {
+                  # we ignore any errors, as it is very common to receive
+                  # Content-Length != 0 but no actual body
+                  # we also access %hdr, as $_[1] might be an erro
+                  http_request (
+                     $method  => $hdr{location},
+                     %arg,
+                     recurse  => $recurse - 1,
+                     Redirect => [$_[0], \%hdr],
+                     $cb);
+               } else {
+                  $cb->($_[0], \%hdr);
+               }
+            };
+
+            $ae_error = 597; # body phase
+
+            my $len = $hdr{"content-length"};
+
+            if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
+               $finish->(undef, 598 => "Request cancelled by on_header");
+            } elsif (
+               $hdr{Status} =~ /^(?:1..|204|205|304)$/
+               or $method eq "HEAD"
+               or (defined $len && !$len)
+            ) {
+               # no body
+               $finish->("", undef, undef, 1);
+            } else {
+               # body handling, many different code paths
+               # - no body expected
+               # - want_body_handle
+               # - te chunked
+               # - 2x length known (with or without on_body)
+               # - 2x length not known (with or without on_body)
+               if (!$redirect && $arg{want_body_handle}) {
+                  $_[0]->on_eof   (undef);
+                  $_[0]->on_error (undef);
+                  $_[0]->on_read  (undef);
+
+                  $finish->(delete $state{handle});
+
+               } elsif ($hdr{"transfer-encoding"} =~ /\bchunked\b/i) {
+                  my $cl = 0;
+                  my $body = undef;
+                  my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
+
+                  $state{read_chunk} = sub {
+                     $_[1] =~ /^([0-9a-fA-F]+)/
+                        or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
+
+                     my $len = hex $1;
+
+                     if ($len) {
+                        $cl += $len;
+
+                        $_[0]->push_read (chunk => $len, sub {
+                           $on_body->($_[1], \%hdr)
+                              or return $finish->(undef, 598 => "Request cancelled by on_body");
+
+                           $_[0]->push_read (line => sub {
+                              length $_[1]
+                                 and return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
+                              $_[0]->push_read (line => $state{read_chunk});
+                           });
+                        });
+                     } else {
+                        $hdr{"content-length"} ||= $cl;
+
+                        $_[0]->push_read (line => $qr_nlnl, sub {
+                           if (length $_[1]) {
+                              for ("$_[1]") {
+                                 y/\015//d; # weed out any \015, as they show up in the weirdest of places.
+
+                                 my $hdr = parse_hdr
+                                    or return $finish->(undef, $ae_error => "Garbled response trailers");
+
+                                 %hdr = (%hdr, %$hdr);
+                              }
+                           }
+
+                           $finish->($body, undef, undef, 1);
+                        });
+                     }
+                  };
+
+                  $_[0]->push_read (line => $state{read_chunk});
+
+               } elsif ($arg{on_body}) {
+                  if ($len) {
+                     $_[0]->on_read (sub {
+                        $len -= length $_[0]{rbuf};
+
+                        $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                           or return $finish->(undef, 598 => "Request cancelled by on_body");
+
+                        $len > 0
+                           or $finish->("", undef, undef, 1);
+                     });
+                  } else {
+                     $_[0]->on_eof (sub {
+                        $finish->("");
+                     });
+                     $_[0]->on_read (sub {
+                        $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
+                           or $finish->(undef, 598 => "Request cancelled by on_body");
+                     });
+                  }
+               } else {
+                  $_[0]->on_eof (undef);
+
+                  if ($len) {
+                     $_[0]->on_read (sub {
+                        $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), undef, undef, 1)
+                           if $len <= length $_[0]{rbuf};
+                     });
+                  } else {
+                     $_[0]->on_error (sub {
+                        ($! == Errno::EPIPE || !$!)
+                           ? $finish->(delete $_[0]{rbuf})
+                           : $finish->(undef, $ae_error => $_[2]);
+                     });
+                     $_[0]->on_read (sub { });
+                  }
+               }
+            }
+         };
+
+         $state{handle}->push_read (line => $qr_nlnl, $state{read_response});
+      };
+
       my $connect_cb = sub {
          $state{fh} = shift
             or do {
@@ -700,235 +929,6 @@ sub http_request($$@) {
 
          $state{handle}->starttls ("connect") if $rscheme eq "https";
 
-         # handle actual, non-tunneled, request
-         my $handle_actual_request = sub {
-            $ae_error = 596; # request phase
-
-            $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
-
-            # send request
-            $state{handle}->push_write (
-               "$method $rpath HTTP/1.1\015\012"
-               . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
-               . "\015\012"
-               . (delete $arg{body})
-            );
-
-            # return if error occured during push_write()
-            return unless %state;
-
-            %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
-
-            # status line and headers
-            $state{read_response} = sub {
-               for ("$_[1]") {
-                  y/\015//d; # weed out any \015, as they show up in the weirdest of places.
-
-                  /^HTTP\/0*([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/gxci
-                     or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid server response" }));
-
-                  # 100 Continue handling
-                  # should not happen as we don't send expect: 100-continue,
-                  # but we handle it just in case.
-                  # since we send the request body regardless, if we get an error
-                  # we are out of-sync, which we currently do NOT handle correctly.
-                  return $state{handle}->push_read (line => $qr_nlnl, $state{read_response})
-                     if $2 eq 100;
-
-                  push @pseudo,
-                     HTTPVersion => $1,
-                     Status      => $2,
-                     Reason      => $3,
-                  ;
-
-                  my $hdr = parse_hdr
-                     or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Garbled response headers" }));
-
-                  %hdr = (%$hdr, @pseudo);
-               }
-
-               # redirect handling
-               # microsoft and other shitheads don't give a shit for following standards,
-               # try to support some common forms of broken Location headers.
-               if ($hdr{location} !~ /^(?: $ | [^:\/?\#]+ : )/x) {
-                  $hdr{location} =~ s/^\.\/+//;
-
-                  my $url = "$rscheme://$uhost:$uport";
-
-                  unless ($hdr{location} =~ s/^\///) {
-                     $url .= $upath;
-                     $url =~ s/\/[^\/]*$//;
-                  }
-
-                  $hdr{location} = "$url/$hdr{location}";
-               }
-
-               my $redirect;
-
-               if ($recurse) {
-                  my $status = $hdr{Status};
-
-                  # industry standard is to redirect POST as GET for
-                  # 301, 302 and 303, in contrast to HTTP/1.0 and 1.1.
-                  # also, the UA should ask the user for 301 and 307 and POST,
-                  # industry standard seems to be to simply follow.
-                  # we go with the industry standard.
-                  if ($status == 301 or $status == 302 or $status == 303) {
-                     # HTTP/1.1 is unclear on how to mutate the method
-                     $method = "GET" unless $method eq "HEAD";
-                     $redirect = 1;
-                  } elsif ($status == 307) {
-                     $redirect = 1;
-                  }
-               }
-
-               my $finish = sub { # ($data, $err_status, $err_reason[, $keepalive])
-                  my $may_keep_alive = $_[3];
-
-                  $state{handle}->destroy if $state{handle};
-                  %state = ();
-
-                  if (defined $_[1]) {
-                     $hdr{OrigStatus} = $hdr{Status}; $hdr{Status} = $_[1];
-                     $hdr{OrigReason} = $hdr{Reason}; $hdr{Reason} = $_[2];
-                  }
-
-                  # set-cookie processing
-                  if ($arg{cookie_jar}) {
-                     cookie_jar_set_cookie $arg{cookie_jar}, $hdr{"set-cookie"}, $uhost, $hdr{date};
-                  }
-
-                  if ($redirect && exists $hdr{location}) {
-                     # we ignore any errors, as it is very common to receive
-                     # Content-Length != 0 but no actual body
-                     # we also access %hdr, as $_[1] might be an erro
-                     http_request (
-                        $method  => $hdr{location},
-                        %arg,
-                        recurse  => $recurse - 1,
-                        Redirect => [$_[0], \%hdr],
-                        $cb);
-                  } else {
-                     $cb->($_[0], \%hdr);
-                  }
-               };
-
-               $ae_error = 597; # body phase
-
-               my $len = $hdr{"content-length"};
-
-               if (!$redirect && $arg{on_header} && !$arg{on_header}(\%hdr)) {
-                  $finish->(undef, 598 => "Request cancelled by on_header");
-               } elsif (
-                  $hdr{Status} =~ /^(?:1..|204|205|304)$/
-                  or $method eq "HEAD"
-                  or (defined $len && !$len)
-               ) {
-                  # no body
-                  $finish->("", undef, undef, 1);
-               } else {
-                  # body handling, many different code paths
-                  # - no body expected
-                  # - want_body_handle
-                  # - te chunked
-                  # - 2x length known (with or without on_body)
-                  # - 2x length not known (with or without on_body)
-                  if (!$redirect && $arg{want_body_handle}) {
-                     $_[0]->on_eof   (undef);
-                     $_[0]->on_error (undef);
-                     $_[0]->on_read  (undef);
-
-                     $finish->(delete $state{handle});
-
-                  } elsif ($hdr{"transfer-encoding"} =~ /\bchunked\b/i) {
-                     my $cl = 0;
-                     my $body = undef;
-                     my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
-
-                     $state{read_chunk} = sub {
-                        $_[1] =~ /^([0-9a-fA-F]+)/
-                           or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
-
-                        my $len = hex $1;
-
-                        if ($len) {
-                           $cl += $len;
-
-                           $_[0]->push_read (chunk => $len, sub {
-                              $on_body->($_[1], \%hdr)
-                                 or return $finish->(undef, 598 => "Request cancelled by on_body");
-
-                              $_[0]->push_read (line => sub {
-                                 length $_[1]
-                                    and return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
-                                 $_[0]->push_read (line => $state{read_chunk});
-                              });
-                           });
-                        } else {
-                           $hdr{"content-length"} ||= $cl;
-
-                           $_[0]->push_read (line => $qr_nlnl, sub {
-                              if (length $_[1]) {
-                                 for ("$_[1]") {
-                                    y/\015//d; # weed out any \015, as they show up in the weirdest of places.
-
-                                    my $hdr = parse_hdr
-                                       or return $finish->(undef, $ae_error => "Garbled response trailers");
-
-                                    %hdr = (%hdr, %$hdr);
-                                 }
-                              }
-
-                              $finish->($body, undef, undef, 1);
-                           });
-                        }
-                     };
-
-                     $_[0]->push_read (line => $state{read_chunk});
-
-                  } elsif ($arg{on_body}) {
-                     if ($len) {
-                        $_[0]->on_read (sub {
-                           $len -= length $_[0]{rbuf};
-
-                           $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                              or return $finish->(undef, 598 => "Request cancelled by on_body");
-
-                           $len > 0
-                              or $finish->("", undef, undef, 1);
-                        });
-                     } else {
-                        $_[0]->on_eof (sub {
-                           $finish->("");
-                        });
-                        $_[0]->on_read (sub {
-                           $arg{on_body}(delete $_[0]{rbuf}, \%hdr)
-                              or $finish->(undef, 598 => "Request cancelled by on_body");
-                        });
-                     }
-                  } else {
-                     $_[0]->on_eof (undef);
-
-                     if ($len) {
-                        $_[0]->on_read (sub {
-                           $finish->((substr delete $_[0]{rbuf}, 0, $len, ""), undef, undef, 1)
-                              if $len <= length $_[0]{rbuf};
-                        });
-                     } else {
-                        $_[0]->on_error (sub {
-                           ($! == Errno::EPIPE || !$!)
-                              ? $finish->(delete $_[0]{rbuf})
-                              : $finish->(undef, $ae_error => $_[2]);
-                        });
-                        $_[0]->on_read (sub { });
-                     }
-                  }
-               }
-            };
-
-            $state{handle}->push_read (line => $qr_nlnl, $state{read_response});
-         };
-
          # now handle proxy-CONNECT method
          if ($proxy && $uscheme eq "https") {
             # oh dear, we have to wrap it into a connect request
@@ -956,7 +956,6 @@ sub http_request($$@) {
                         || do { require AnyEvent::Socket; \&AnyEvent::Socket::tcp_connect };
 
       $state{connect_guard} = $tcp_connect->($rhost, $rport, $connect_cb, $arg{on_prepare} || sub { $timeout });
-
    };
 
    defined wantarray && AnyEvent::Util::guard { %state = () }

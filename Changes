@@ -19,6 +19,7 @@ TODO: download example
            - lowercase cookie parameter names for improved compatibility.
            - support the max-age cookie parameter, used if expires is missing.
            - support cookie dates (and a few others) in parse_date.
+           - suppoer value-less parameters (e.g. secure, httponly).
 
 1.5  Fri Dec 31 04:47:08 CET 2010
 	- bugfix: after headers were received, if any error occured the wrong
