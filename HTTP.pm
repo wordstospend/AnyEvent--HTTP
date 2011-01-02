@@ -38,8 +38,7 @@ limited support.
 
 package AnyEvent::HTTP;
 
-use strict;
-no warnings;
+use common::sense;
 
 use Errno ();
 
@@ -779,7 +778,6 @@ sub http_request($$@) {
             $ae_error = 597; # body phase
 
             my $len = $hdr{"content-length"};
-               warn "no content $redirect x<$len>$hdr{Status}\n";#d#
 
             # body handling, many different code paths
             # - no body expected
