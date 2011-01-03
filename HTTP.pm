@@ -786,7 +786,9 @@ sub http_request($$@) {
 
          $ae_error = 597; # body phase
 
-         my $len = $hdr{"content-length"};
+         my $chunked = $hdr{"transfer-encoding"} =~ /\bchunked\b/i; # not quite correct...
+
+         my $len = $chunked ? undef : $hdr{"content-length"};
 
          # body handling, many different code paths
          # - no body expected
@@ -811,7 +813,7 @@ sub http_request($$@) {
 
             $finish->(delete $state{handle});
 
-         } elsif ($hdr{"transfer-encoding"} =~ /\bchunked\b/i) {
+         } elsif ($chunked) {
             my $cl = 0;
             my $body = undef;
             my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
