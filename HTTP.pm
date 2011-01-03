@@ -171,6 +171,10 @@ will provide defaults at least for C<TE:>, C<Referer:> and C<User-Agent:>
 (this can be suppressed by using C<undef> for these headers in which case
 they won't be sent at all).
 
+You really should provide your own C<User-Agent:> header value that is
+appropriate for your program - I wouldn't be surprised if the default
+AnyEvent string gets blocked by webservers sooner or later.
+
 =item timeout => $seconds
 
 The time-out to use for various stages - each connect attempt will reset
@@ -331,6 +335,7 @@ timeout of 30 seconds.
 
    http_request
       GET     => "https://www.google.com",
+      headers => { "user-agent" => "MySearchClient 1.0" },
       timeout => 30,
       sub {
          my ($body, $hdr) = @_;
