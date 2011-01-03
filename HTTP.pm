@@ -651,7 +651,14 @@ sub http_request($$@) {
    $hdr{"content-length"} = length $arg{body}
       if length $arg{body} || $method ne "GET";
 
-   $hdr{connection} = "close Te"; #1.1
+   my $idempotent = $method =~ /^(?:GET|HEAD|PUT|DELETE|OPTIONS|TRACE)$/;
+
+   # default value for keepalive is true iff the request is for an idempotent method
+   my $keepalive = exists $arg{keepalive}
+      ? $arg{keepalive}*1
+      : $idempotent ? $PERSISTENT_TIMEOUT : 0;
+
+   $hdr{connection} = ($keepalive ? "" : "close ") . "Te"; #1.1
    $hdr{te}         = "trailers" unless exists $hdr{te}; #1.1
 
    my %state = (connect_guard => 1);
@@ -675,7 +682,8 @@ sub http_request($$@) {
       # return if error occured during push_write()
       return unless %state;
 
-      %hdr = (); # reduce memory usage, save a kitten, also make it possible to re-use
+      # reduce memory usage, save a kitten, also re-use it for the response headers.
+      %hdr = ();
 
       # status line and headers
       $state{read_response} = sub {
