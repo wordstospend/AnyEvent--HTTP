@@ -48,24 +48,20 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '1.5';
+our $VERSION = '2.0';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
 our $USERAGENT          = "Mozilla/5.0 (compatible; U; AnyEvent-HTTP/$VERSION; +http://software.schmorp.de/pkg/AnyEvent)";
 our $MAX_RECURSE        =  10;
-our $MAX_PERSISTENT     =   8;
-our $PERSISTENT_TIMEOUT =   2;
+our $PERSISTENT_TIMEOUT =   3;
 our $TIMEOUT            = 300;
-
-# changing these is evil
-our $MAX_PERSISTENT_PER_HOST = 2;
-our $MAX_PER_HOST       = 4;
+our $MAX_PER_HOST       =   4; # changing this is evil
 
 our $PROXY;
 our $ACTIVE = 0;
 
-my %KA_COUNT; # number of open keep-alive connections per host
+my %KA_CACHE; # indexed by uhost currently, points to [$handle...] array
 my %CO_SLOT;  # number of open connections, and wait queue, per host
 
 =item http_get $url, key => value..., $cb->($data, $headers)
@@ -188,8 +184,7 @@ Default timeout is 5 minutes.
 Use the given http proxy for all requests. If not specified, then the
 default proxy (as specified by C<$ENV{http_proxy}>) is used.
 
-C<$scheme> must be either missing, C<http> for HTTP or C<https> for
-HTTPS.
+C<$scheme> must be either missing or must be C<http> for HTTP.
 
 =item body => $string
 
@@ -229,6 +224,16 @@ verification) TLS context.
 
 The default for this option is C<low>, which could be interpreted as "give
 me the page, no matter what".
+
+See also the C<sessionid> parameter.
+
+=item session => $string
+
+The module might reuse connections to the same host internally. Sometimes
+(e.g. when using TLS), you do not want to reuse connections from other
+sessions. This can be achieved by setting this parameter to some unique
+ID (such as the address of an object storing your state data, or the TLS
+context) - only connections using the same unique ID will be reused.
 
 =item on_prepare => $callback->($fh)
 
@@ -308,10 +313,10 @@ callback will receive the L<AnyEvent::Handle> object associated with the
 connection. In error cases, C<undef> will be passed. When there is no body
 (e.g. status C<304>), the empty string will be passed.
 
-The handle object might or might not be in TLS mode, might be connected to
-a proxy, be a persistent connection etc., and configured in unspecified
-ways. The user is responsible for this handle (it will not be used by this
-module anymore).
+The handle object might or might not be in TLS mode, might be connected
+to a proxy, be a persistent connection, use chunked transfer encoding
+etc., and configured in unspecified ways. The user is responsible for this
+handle (it will not be used by this module anymore).
 
 This is useful with some push-type services, where, after the initial
 headers, an interactive protocol is used (typical example would be the
@@ -319,6 +324,47 @@ push-style twitter API which starts a JSON/XML stream).
 
 If you think you need this, first have a look at C<on_body>, to see if
 that doesn't solve your problem in a better way.
+
+=item persistent => $boolean
+
+Try to create/reuse a persistent connection. When this flag is set
+(default: true for idempotent requests, false for all others), then
+C<http_request> tries to re-use an existing (previously-created)
+persistent connection to the host and, failing that, tries to create a new
+one.
+
+Requests failing in certain ways will be automatically retried once, which
+is dangerous for non-idempotent requests, which is why it defaults to off
+for them. The reason for this is because the bozos who designed HTTP/1.1
+made it impossible to distinguish between a fatal error and a normal
+connection timeout, so you never know whether there was a problem with
+your request or not.
+
+When reusing an existent connection, many parameters (such as TLS context)
+will be ignored. See the C<session> parameter for a workaround.
+
+=item keepalive => $boolean
+
+Only used when C<persistent> is also true. This parameter decides whether
+C<http_request> tries to handshake a HTTP/1.0-style keep-alive connection
+(as opposed to only a HTTP/1.1 persistent connection).
+
+The default is true, except when using a proxy, in which case it defaults
+to false, as HTTP/1.0 proxies cannot support this in a meaningful way.
+
+=item handle_params => { key => value ... }
+
+The key-value pairs in this hash will be passed to any L<AnyEvent::Handle>
+constructor that is called - not all requests will create a handle, and
+sometimes more than one is created, so this parameter is only good for
+setting hints.
+
+Example: set the maximum read size to 4096, to potentially conserve memory
+at the cost of speed.
+
+   handle_params => {
+      max_read_size => 4096,
+   },
 
 =back
 
@@ -356,6 +402,9 @@ cancel it.
 
 =cut
 
+#############################################################################
+# wait queue/slots
+
 sub _slot_schedule;
 sub _slot_schedule($) {
    my $host = shift;
@@ -387,6 +436,7 @@ sub _get_slot($$) {
 }
 
 #############################################################################
+# cookie handling
 
 # expire cookies
 sub cookie_jar_expire($;$) {
@@ -420,7 +470,7 @@ sub cookie_jar_expire($;$) {
  
 # extract cookies from jar
 sub cookie_jar_extract($$$$) {
-   my ($jar, $uscheme, $uhost, $upath) = @_;
+   my ($jar, $scheme, $host, $path) = @_;
 
    %$jar = () if $jar->{version} != 1;
 
@@ -430,18 +480,18 @@ sub cookie_jar_extract($$$$) {
       next unless ref $paths;
 
       if ($chost =~ /^\./) {
-         next unless $chost eq substr $uhost, -length $chost;
+         next unless $chost eq substr $host, -length $chost;
       } elsif ($chost =~ /\./) {
-         next unless $chost eq $uhost;
+         next unless $chost eq $host;
       } else {
          next;
       }
 
       while (my ($cpath, $cookies) = each %$paths) {
-         next unless $cpath eq substr $upath, 0, length $cpath;
+         next unless $cpath eq substr $path, 0, length $cpath;
 
          while (my ($cookie, $kv) = each %$cookies) {
-            next if $uscheme ne "https" && exists $kv->{secure};
+            next if $scheme ne "https" && exists $kv->{secure};
 
             if (exists $kv->{_expires} and AE::now > $kv->{_expires}) {
                delete $cookies->{$cookie};
@@ -465,7 +515,7 @@ sub cookie_jar_extract($$$$) {
  
 # parse set_cookie header into jar
 sub cookie_jar_set_cookie($$$$) {
-   my ($jar, $set_cookie, $uhost, $date) = @_;
+   my ($jar, $set_cookie, $host, $date) = @_;
 
    my $anow = int AE::now;
    my $snow; # server-now
@@ -531,7 +581,7 @@ sub cookie_jar_set_cookie($$$$) {
          my $ndots = $cdom =~ y/.//;
          next if $ndots < ($cdom =~ /\.[^.][^.]\.[^.][^.]$/ ? 3 : 2);
       } else {
-         $cdom = $uhost;
+         $cdom = $host;
       }
 
       # store it
@@ -542,8 +592,50 @@ sub cookie_jar_set_cookie($$$$) {
    }
 }
 
+#############################################################################
+# keepalive/persistent connection cache
+
+# fetch a connection from the keepalive cache
+sub ka_fetch($) {
+   my $ka_key = shift;
+
+   my $hdl = pop @{ $KA_CACHE{$ka_key} }; # currently we reuse the MOST RECENTLY USED connection
+   delete $KA_CACHE{$ka_key}
+      unless @{ $KA_CACHE{$ka_key} };
+
+   $hdl
+}
+
+sub ka_store($$) {
+   my ($ka_key, $hdl) = @_;
+
+   my $kaa = $KA_CACHE{$ka_key} ||= [];
+
+   my $destroy = sub {
+      my @ka = grep $_ != $hdl, @{ $KA_CACHE{$ka_key} };
+
+      $hdl->destroy;
+
+      @ka
+         ? $KA_CACHE{$ka_key} = \@ka
+         : delete $KA_CACHE{$ka_key};
+   };
+
+   # on error etc., destroy
+   $hdl->on_error ($destroy);
+   $hdl->on_eof   ($destroy);
+   $hdl->on_read  ($destroy);
+   $hdl->timeout  ($PERSISTENT_TIMEOUT);
+
+   push @$kaa, $hdl;
+   shift @$kaa while @$kaa > $MAX_PER_HOST;
+}
+
+#############################################################################
+# utilities
+
 # continue to parse $_ for headers and place them into the arg
-sub parse_hdr() {
+sub _parse_hdr() {
    my %hdr;
 
    # things seen, not parsed:
@@ -567,10 +659,31 @@ sub parse_hdr() {
    \%hdr
 }
 
+#############################################################################
+# http_get
+
 our $qr_nlnl = qr{(?<![^\012])\015?\012};
 
 our $TLS_CTX_LOW  = { cache => 1, sslv2 => 1 };
 our $TLS_CTX_HIGH = { cache => 1, verify => 1, verify_peername => "https" };
+
+# maybe it should just become a normal object :/
+
+sub _destroy_state(\%) {
+   my ($state) = @_;
+
+   $state->{handle}->destroy if $state->{handle};
+   %$state = ();
+}
+
+sub _error(\%$$) {
+   my ($state, $cb, $hdr) = @_;
+
+   &_destroy_state ($state);
+
+   $cb->(undef, $hdr);
+   ()
+}
 
 sub http_request($$@) {
    my $cb = pop;
@@ -601,7 +714,7 @@ sub http_request($$@) {
    my $proxy   = $arg{proxy}   || $PROXY;
    my $timeout = $arg{timeout} || $TIMEOUT;
 
-   my ($uscheme, $uauthority, $upath, $query, $fragment) =
+   my ($uscheme, $uauthority, $upath, $query, undef) = # ignore fragment
       $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:(\?[^#]*))?(?:#(.*))?|;
 
    $uscheme = lc $uscheme;
@@ -659,11 +772,14 @@ sub http_request($$@) {
    my $idempotent = $method =~ /^(?:GET|HEAD|PUT|DELETE|OPTIONS|TRACE)$/;
 
    # default value for keepalive is true iff the request is for an idempotent method
-   my $keepalive = exists $arg{keepalive}
-      ? $arg{keepalive}*1
-      : $idempotent ? $PERSISTENT_TIMEOUT : 0;
+   my $keepalive = exists $arg{keepalive} ? !!$arg{keepalive} : $idempotent;
+   my $keepalive10 = exists $arg{keepalive10} ? $arg{keepalive10} : !$proxy;
+   my $keptalive; # true if this is actually a recycled connection
 
-   $hdr{connection} = ($keepalive ? "" : "close ") . "Te"; #1.1
+   # the key to use in the keepalive cache
+   my $ka_key = "$uhost\x00$arg{sessionid}";
+
+   $hdr{connection} = ($keepalive ? $keepalive10 ? "keep-alive " : "" : "close ") . "Te"; #1.1
    $hdr{te}         = "trailers" unless exists $hdr{te}; #1.1
 
    my %state = (connect_guard => 1);
@@ -674,10 +790,12 @@ sub http_request($$@) {
    my $handle_actual_request = sub {
       $ae_error = 596; # request phase
 
-      $state{handle}->starttls ("connect") if $uscheme eq "https" && !exists $state{handle}{tls};
+      my $hdl = $state{handle};
+
+      $hdl->starttls ("connect") if $uscheme eq "https" && !exists $hdl->{tls};
 
       # send request
-      $state{handle}->push_write (
+      $hdl->push_write (
          "$method $rpath HTTP/1.1\015\012"
          . (join "", map "\u$_: $hdr{$_}\015\012", grep defined $hdr{$_}, keys %hdr)
          . "\015\012"
@@ -692,11 +810,13 @@ sub http_request($$@) {
 
       # status line and headers
       $state{read_response} = sub {
+         return unless %state;
+
          for ("$_[1]") {
             y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
             /^HTTP\/0*([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\012]*) )? \012/gxci
-               or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid server response" }));
+               or return _error %state, $cb, { @pseudo, Status => 599, Reason => "Invalid server response" };
 
             # 100 Continue handling
             # should not happen as we don't send expect: 100-continue,
@@ -712,8 +832,8 @@ sub http_request($$@) {
                Reason      => $3,
             ;
 
-            my $hdr = parse_hdr
-               or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Garbled response headers" }));
+            my $hdr = _parse_hdr
+               or return _error %state, $cb, { @pseudo, Status => 599, Reason => "Garbled response headers" };
 
             %hdr = (%$hdr, @pseudo);
          }
@@ -754,9 +874,22 @@ sub http_request($$@) {
          }
 
          my $finish = sub { # ($data, $err_status, $err_reason[, $keepalive])
-            my $may_keep_alive = $_[3];
+            if ($state{handle}) {
+               # handle keepalive
+               if (
+                  $keepalive
+                  && $_[3]
+                  && ($hdr{HTTPVersion} < 1.1
+                      ? $hdr{connection} =~ /\bkeep-?alive\b/i
+                      : $hdr{connection} !~ /\bclose\b/i)
+               ) {
+                  ka_store $ka_key, delete $state{handle};
+               } else {
+                  # no keepalive, destroy the handle
+                  $state{handle}->destroy;
+               }
+            }
 
-            $state{handle}->destroy if $state{handle};
             %state = ();
 
             if (defined $_[1]) {
@@ -778,7 +911,8 @@ sub http_request($$@) {
                   %arg,
                   recurse  => $recurse - 1,
                   Redirect => [$_[0], \%hdr],
-                  $cb);
+                  $cb
+               );
             } else {
                $cb->($_[0], \%hdr);
             }
@@ -815,7 +949,7 @@ sub http_request($$@) {
 
          } elsif ($chunked) {
             my $cl = 0;
-            my $body = undef;
+            my $body = "";
             my $on_body = $arg{on_body} || sub { $body .= shift; 1 };
 
             $state{read_chunk} = sub {
@@ -845,7 +979,7 @@ sub http_request($$@) {
                         for ("$_[1]") {
                            y/\015//d; # weed out any \015, as they show up in the weirdest of places.
 
-                           my $hdr = parse_hdr
+                           my $hdr = _parse_hdr
                               or return $finish->(undef, $ae_error => "Garbled response trailers");
 
                            %hdr = (%hdr, %$hdr);
@@ -898,47 +1032,63 @@ sub http_request($$@) {
          }
       };
 
-      $state{handle}->push_read (line => $qr_nlnl, $state{read_response});
+      # if keepalive is enabled, then the server closing the connection
+      # before a response can happen legally - we retry on idempotent methods.
+      if ($keptalive && $idempotent) {
+         my $old_eof = $hdl->{on_eof};
+         $hdl->{on_eof} = sub {
+            _destroy_state %state;
+
+            http_request (
+               $method => $url,
+               %arg,
+               keepalive => 0,
+               $cb
+            );
+         };
+         $hdl->on_read (sub {
+            return unless %state;
+
+            # as soon as we receive something, a connection close
+            # once more becomes a hard error
+            $hdl->{on_eof} = $old_eof;
+            $hdl->push_read (line => $qr_nlnl, $state{read_response});
+         });
+      } else {
+         $hdl->push_read (line => $qr_nlnl, $state{read_response});
+      }
    };
 
+   my $prepare_handle = sub {
+      my ($hdl) = $state{handle};
+
+      $hdl->timeout ($timeout);
+      $hdl->on_error (sub {
+         _error %state, $cb, { @pseudo, Status => $ae_error, Reason => $_[2] };
+      });
+      $hdl->on_eof (sub {
+         _error %state, $cb, { @pseudo, Status => $ae_error, Reason => "Unexpected end-of-file" };
+      });
+   };
+
+   # connected to proxy (or origin server)
    my $connect_cb = sub {
-      $state{fh} = shift
-         or do {
-            my $err = "$!";
-            %state = ();
-            return $cb->(undef, { @pseudo, Status => $ae_error, Reason => $err });
-         };
+      my $fh = shift
+         or return _error %state, $cb, { @pseudo, Status => $ae_error, Reason => "$!" };
 
       return unless delete $state{connect_guard};
 
       # get handle
       $state{handle} = new AnyEvent::Handle
-         fh       => $state{fh},
-         peername => $rhost,
+         %{ $arg{handle_params} },
+         fh       => $fh,
+         peername => $uhost,
          tls_ctx  => $arg{tls_ctx},
-         # these need to be reconfigured on keepalive handles
-         timeout  => $timeout,
-         on_error => sub {
-            %state = ();
-            $cb->(undef, { @pseudo, Status => $ae_error, Reason => $_[2] });
-         },
-         on_eof   => sub {
-            %state = ();
-            $cb->(undef, { @pseudo, Status => $ae_error, Reason => "Unexpected end-of-file" });
-         },
       ;
 
-      # limit the number of persistent connections
-      # keepalive not yet supported
-#         if ($KA_COUNT{$_[1]} < $MAX_PERSISTENT_PER_HOST) {
-#            ++$KA_COUNT{$_[1]};
-#            $state{handle}{ka_count_guard} = AnyEvent::Util::guard {
-#               --$KA_COUNT{$_[1]}
-#            };
-#            $hdr{connection} = "keep-alive";
-#         }
+      $prepare_handle->();
 
-      $state{handle}->starttls ("connect") if $rscheme eq "https";
+      #$state{handle}->starttls ("connect") if $rscheme eq "https";
 
       # now handle proxy-CONNECT method
       if ($proxy && $uscheme eq "https") {
@@ -948,14 +1098,13 @@ sub http_request($$@) {
          $state{handle}->push_write ("CONNECT $uhost:$uport HTTP/1.0\015\012\015\012");
          $state{handle}->push_read (line => $qr_nlnl, sub {
             $_[1] =~ /^HTTP\/([0-9\.]+) \s+ ([0-9]{3}) (?: \s+ ([^\015\012]*) )?/ix
-               or return (%state = (), $cb->(undef, { @pseudo, Status => 599, Reason => "Invalid proxy connect response ($_[1])" }));
+               or return _error %state, $cb, { @pseudo, Status => 599, Reason => "Invalid proxy connect response ($_[1])" };
 
             if ($2 == 200) {
                $rpath = $upath;
                $handle_actual_request->();
             } else {
-               %state = ();
-               $cb->(undef, { @pseudo, Status => $2, Reason => $3 });
+               _error %state, $cb, { @pseudo, Status => $2, Reason => $3 };
             }
          });
       } else {
@@ -968,13 +1117,23 @@ sub http_request($$@) {
 
       return unless $state{connect_guard};
 
-      my $tcp_connect = $arg{tcp_connect}
-                        || do { require AnyEvent::Socket; \&AnyEvent::Socket::tcp_connect };
+      # try to use an existing keepalive connection, but only if we, ourselves, plan
+      # on a keepalive request (in theory, this should be a separate config option).
+      if ($keepalive && $KA_CACHE{$ka_key}) {
+         $keptalive = 1;
+         $state{handle} = ka_fetch $ka_key;
+         $prepare_handle->();
+         $handle_actual_request->();
 
-      $state{connect_guard} = $tcp_connect->($rhost, $rport, $connect_cb, $arg{on_prepare} || sub { $timeout });
+      } else {
+         my $tcp_connect = $arg{tcp_connect}
+                           || do { require AnyEvent::Socket; \&AnyEvent::Socket::tcp_connect };
+
+         $state{connect_guard} = $tcp_connect->($rhost, $rport, $connect_cb, $arg{on_prepare} || sub { $timeout });
+      }
    };
 
-   defined wantarray && AnyEvent::Util::guard { %state = () }
+   defined wantarray && AnyEvent::Util::guard { _destroy_state %state }
 }
 
 sub http_get($@) {
@@ -1002,7 +1161,7 @@ the actual connection, which in turn uses AnyEvent::DNS to resolve
 hostnames. The latter is a simple stub resolver and does no caching
 on its own. If you want DNS caching, you currently have to provide
 your own default resolver (by storing a suitable resolver object in
-C<$AnyEvent::DNS::RESOLVER>).
+C<$AnyEvent::DNS::RESOLVER>) or your own C<tcp_connect> callback.
 
 =head2 GLOBAL FUNCTIONS AND VARIABLES
 
@@ -1011,8 +1170,7 @@ C<$AnyEvent::DNS::RESOLVER>).
 =item AnyEvent::HTTP::set_proxy "proxy-url"
 
 Sets the default proxy server to use. The proxy-url must begin with a
-string of the form C<http://host:port> (optionally C<https:...>), croaks
-otherwise.
+string of the form C<http://host:port>, croaks otherwise.
 
 To clear an already-set proxy, use C<undef>.
 
@@ -1070,6 +1228,10 @@ timestamp, or C<undef> if the date cannot be parsed.
 
 The default value for the C<recurse> request parameter (default: C<10>).
 
+=item $AnyEvent::HTTP::TIMEOUT
+
+The default timeout for conenction operations (default: C<300>).
+
 =item $AnyEvent::HTTP::USERAGENT
 
 The default value for the C<User-Agent> header (the default is
@@ -1079,16 +1241,27 @@ C<Mozilla/5.0 (compatible; U; AnyEvent-HTTP/$VERSION; +http://software.schmorp.d
 
 The maximum number of concurrent connections to the same host (identified
 by the hostname). If the limit is exceeded, then the additional requests
-are queued until previous connections are closed.
+are queued until previous connections are closed. Both persistent and
+non-persistent connections are counted in this limit.
 
 The default value for this is C<4>, and it is highly advisable to not
-increase it.
+increase it much.
+
+For comparison: the RFC's recommend 4 non-persistent or 2 persistent
+connections, older browsers used 2, newers (such as firefox 3) typically
+use 6, and Opera uses 8 because like, they have the fastest browser and
+give a shit for everybody else on the planet.
+
+=item $AnyEvent::HTTP::PERSISTENT_TIMEOUT
+
+The time after which idle persistent conenctions get closed by
+AnyEvent::HTTP (default: C<3>).
 
 =item $AnyEvent::HTTP::ACTIVE
 
 The number of active connections. This is not the number of currently
 running requests, but the number of currently open and non-idle TCP
-connections. This number of can be useful for load-leveling.
+connections. This number can be useful for load-leveling.
 
 =back
 
@@ -1141,7 +1314,7 @@ sub parse_date($) {
 
 sub set_proxy($) {
    if (length $_[0]) {
-      $_[0] =~ m%^(https?):// ([^:/]+) (?: : (\d*) )?%ix
+      $_[0] =~ m%^(http):// ([^:/]+) (?: : (\d*) )?%ix
          or Carp::croak "$_[0]: invalid proxy URL";
       $PROXY = [$2, $3 || 3128, $1]
    } else {
