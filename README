@@ -53,7 +53,7 @@ DESCRIPTION
 
         The callback will be called with the response body data as first
         argument (or "undef" if an error occured), and a hash-ref with
-        response headers as second argument.
+        response headers (and trailers) as second argument.
 
         All the headers in that hash are lowercased. In addition to the
         response headers, the "pseudo-headers" (uppercase to avoid clashing
@@ -81,8 +81,15 @@ DESCRIPTION
 
         If an internal error occurs, such as not being able to resolve a
         hostname, then $data will be "undef", "$headers->{Status}" will be
-        "59x" (usually 599) and the "Reason" pseudo-header will contain an
-        error message.
+        590-599 and the "Reason" pseudo-header will contain an error
+        message. Currently the following status codes are used:
+
+        595 - errors during connection etsbalishment, proxy handshake.
+        596 - errors during TLS negotiation, request sending and header
+        processing.
+        597 - errors during body receiving or processing.
+        598 - user aborted request via "on_header" or "on_body".
+        599 - other, usually nonretryable, errors (garbled URL etc.).
 
         A typical callback might look like this:
 
@@ -106,9 +113,15 @@ DESCRIPTION
         headers => hashref
             The request headers to use. Currently, "http_request" may
             provide its own "Host:", "Content-Length:", "Connection:" and
-            "Cookie:" headers and will provide defaults for "User-Agent:"
-            and "Referer:" (this can be suppressed by using "undef" for
-            these headers in which case they won't be sent at all).
+            "Cookie:" headers and will provide defaults at least for "TE:",
+            "Referer:" and "User-Agent:" (this can be suppressed by using
+            "undef" for these headers in which case they won't be sent at
+            all).
+
+            You really should provide your own "User-Agent:" header value
+            that is appropriate for your program - I wouldn't be surprised
+            if the default AnyEvent string gets blocked by webservers sooner
+            or later.
 
         timeout => $seconds
             The time-out to use for various stages - each connect attempt
@@ -122,11 +135,10 @@ DESCRIPTION
             then the default proxy (as specified by $ENV{http_proxy}) is
             used.
 
-            $scheme must be either missing, "http" for HTTP or "https" for
-            HTTPS.
+            $scheme must be either missing or must be "http" for HTTP.
 
         body => $string
-            The request body, usually empty. Will be-sent as-is (future
+            The request body, usually empty. Will be sent as-is (future
             versions of this module might offer more options).
 
         cookie_jar => $hash_ref
@@ -135,16 +147,20 @@ DESCRIPTION
 
             The $hash_ref must be an (initially empty) hash reference which
             will get updated automatically. It is possible to save the
-            cookie_jar to persistent storage with something like JSON or
-            Storable, but this is not recommended, as expiry times are
-            currently being ignored.
+            cookie jar to persistent storage with something like JSON or
+            Storable - see the "AnyEvent::HTTP::cookie_jar_expire" function
+            if you wish to remove expired or session-only cookies, and also
+            for documentation on the format of the cookie jar.
 
-            Note that this cookie implementation is not of very high
-            quality, nor meant to be complete. If you want complete cookie
-            management you have to do that on your own. "cookie_jar" is
-            meant as a quick fix to get some cookie-using sites working.
-            Cookies are a privacy disaster, do not use them unless required
-            to.
+            Note that this cookie implementation is not meant to be
+            complete. If you want complete cookie management you have to do
+            that on your own. "cookie_jar" is meant as a quick fix to get
+            most cookie-using sites working. Cookies are a privacy disaster,
+            do not use them unless required to.
+
+            When cookie processing is enabled, the "Cookie:" and
+            "Set-Cookie:" headers will be set and handled by this module,
+            otherwise they will be left untouched.
 
         tls_ctx => $scheme | $tls_ctx
             Specifies the AnyEvent::TLS context to be used for https
@@ -156,6 +172,16 @@ DESCRIPTION
 
             The default for this option is "low", which could be interpreted
             as "give me the page, no matter what".
+
+            See also the "sessionid" parameter.
+
+        session => $string
+            The module might reuse connections to the same host internally.
+            Sometimes (e.g. when using TLS), you do not want to reuse
+            connections from other sessions. This can be achieved by setting
+            this parameter to some unique ID (such as the address of an
+            object storing your state data, or the TLS context) - only
+            connections using the same unique ID will be reused.
 
         on_prepare => $callback->($fh)
             In rare cases you need to "tune" the socket before it is used to
@@ -194,6 +220,10 @@ DESCRIPTION
             unwanted content, which, if it is supposed to be rare, can be
             faster than first doing a "HEAD" request.
 
+            The downside is that cancelling the request makes it impossible
+            to re-use the connection. Also, the "on_header" callback will
+            not receive any trailer (headers sent after the response body).
+
             Example: cancel the request unless the content-type is
             "text/html".
 
@@ -210,6 +240,9 @@ DESCRIPTION
             continue), or false, in which case AnyEvent::HTTP will cancel
             the download (and call the completion callback with an error
             code of 598).
+
+            The downside to cancelling the request is that it makes it
+            impossible to re-use the connection.
 
             This callback is useful when the data is too large to be held in
             memory (so the callback writes it to a file) or when only some
@@ -233,9 +266,10 @@ DESCRIPTION
             status 304), the empty string will be passed.
 
             The handle object might or might not be in TLS mode, might be
-            connected to a proxy, be a persistent connection etc., and
-            configured in unspecified ways. The user is responsible for this
-            handle (it will not be used by this module anymore).
+            connected to a proxy, be a persistent connection, use chunked
+            transfer encoding etc., and configured in unspecified ways. The
+            user is responsible for this handle (it will not be used by this
+            module anymore).
 
             This is useful with some push-type services, where, after the
             initial headers, an interactive protocol is used (typical
@@ -245,18 +279,62 @@ DESCRIPTION
             If you think you need this, first have a look at "on_body", to
             see if that doesn't solve your problem in a better way.
 
-        Example: make a simple HTTP GET request for http://www.nethype.de/
+        persistent => $boolean
+            Try to create/reuse a persistent connection. When this flag is
+            set (default: true for idempotent requests, false for all
+            others), then "http_request" tries to re-use an existing
+            (previously-created) persistent connection to the host and,
+            failing that, tries to create a new one.
+
+            Requests failing in certain ways will be automatically retried
+            once, which is dangerous for non-idempotent requests, which is
+            why it defaults to off for them. The reason for this is because
+            the bozos who designed HTTP/1.1 made it impossible to
+            distinguish between a fatal error and a normal connection
+            timeout, so you never know whether there was a problem with your
+            request or not.
+
+            When reusing an existent connection, many parameters (such as
+            TLS context) will be ignored. See the "session" parameter for a
+            workaround.
+
+        keepalive => $boolean
+            Only used when "persistent" is also true. This parameter decides
+            whether "http_request" tries to handshake a HTTP/1.0-style
+            keep-alive connection (as opposed to only a HTTP/1.1 persistent
+            connection).
+
+            The default is true, except when using a proxy, in which case it
+            defaults to false, as HTTP/1.0 proxies cannot support this in a
+            meaningful way.
+
+        handle_params => { key => value ... }
+            The key-value pairs in this hash will be passed to any
+            AnyEvent::Handle constructor that is called - not all requests
+            will create a handle, and sometimes more than one is created, so
+            this parameter is only good for setting hints.
+
+            Example: set the maximum read size to 4096, to potentially
+            conserve memory at the cost of speed.
+
+               handle_params => {
+                  max_read_size => 4096,
+               },
+
+        Example: do a simple HTTP GET request for http://www.nethype.de/ and
+        print the response body.
 
            http_request GET => "http://www.nethype.de/", sub {
               my ($body, $hdr) = @_;
               print "$body\n";
            };
 
-        Example: make a HTTP HEAD request on https://www.google.com/, use a
+        Example: do a HTTP HEAD request on https://www.google.com/, use a
         timeout of 30 seconds.
 
            http_request
               GET     => "https://www.google.com",
+              headers => { "user-agent" => "MySearchClient 1.0" },
               timeout => 30,
               sub {
                  my ($body, $hdr) = @_;
@@ -265,8 +343,8 @@ DESCRIPTION
               }
            ;
 
-        Example: make another simple HTTP GET request, but immediately try
-        to cancel it.
+        Example: do another simple HTTP GET request, but immediately try to
+        cancel it.
 
            my $request = http_request GET => "http://www.nethype.de/", sub {
               my ($body, $hdr) = @_;
@@ -281,26 +359,69 @@ DESCRIPTION
     hostnames. The latter is a simple stub resolver and does no caching on
     its own. If you want DNS caching, you currently have to provide your own
     default resolver (by storing a suitable resolver object in
-    $AnyEvent::DNS::RESOLVER).
+    $AnyEvent::DNS::RESOLVER) or your own "tcp_connect" callback.
 
   GLOBAL FUNCTIONS AND VARIABLES
     AnyEvent::HTTP::set_proxy "proxy-url"
         Sets the default proxy server to use. The proxy-url must begin with
-        a string of the form "http://host:port" (optionally "https:..."),
-        croaks otherwise.
+        a string of the form "http://host:port", croaks otherwise.
 
         To clear an already-set proxy, use "undef".
+
+    AnyEvent::HTTP::cookie_jar_expire $jar[, $session_end]
+        Remove all cookies from the cookie jar that have been expired. If
+        $session_end is given and true, then additionally remove all session
+        cookies.
+
+        You should call this function (with a true $session_end) before you
+        save cookies to disk, and you should call this function after
+        loading them again. If you have a long-running program you can
+        additonally call this function from time to time.
+
+        A cookie jar is initially an empty hash-reference that is managed by
+        this module. It's format is subject to change, but currently it is
+        like this:
+
+        The key "version" has to contain 1, otherwise the hash gets emptied.
+        All other keys are hostnames or IP addresses pointing to
+        hash-references. The key for these inner hash references is the
+        server path for which this cookie is meant, and the values are again
+        hash-references. The keys of those hash-references is the cookie
+        name, and the value, you guessed it, is another hash-reference, this
+        time with the key-value pairs from the cookie, except for "expires"
+        and "max-age", which have been replaced by a "_expires" key that
+        contains the cookie expiry timestamp.
+
+        Here is an example of a cookie jar with a single cookie, so you have
+        a chance of understanding the above paragraph:
+
+           {
+              version    => 1,
+              "10.0.0.1" => {
+                 "/" => {
+                    "mythweb_id" => {
+                      _expires => 1293917923,
+                      value    => "ooRung9dThee3ooyXooM1Ohm",
+                    },
+                 },
+              },
+           }
 
     $date = AnyEvent::HTTP::format_date $timestamp
         Takes a POSIX timestamp (seconds since the epoch) and formats it as
         a HTTP Date (RFC 2616).
 
     $timestamp = AnyEvent::HTTP::parse_date $date
-        Takes a HTTP Date (RFC 2616) and returns the corresponding POSIX
-        timestamp, or "undef" if the date cannot be parsed.
+        Takes a HTTP Date (RFC 2616) or a Cookie date (netscape cookie spec)
+        or a bunch of minor variations of those, and returns the
+        corresponding POSIX timestamp, or "undef" if the date cannot be
+        parsed.
 
     $AnyEvent::HTTP::MAX_RECURSE
         The default value for the "recurse" request parameter (default: 10).
+
+    $AnyEvent::HTTP::TIMEOUT
+        The default timeout for conenction operations (default: 300).
 
     $AnyEvent::HTTP::USERAGENT
         The default value for the "User-Agent" header (the default is
@@ -311,15 +432,25 @@ DESCRIPTION
         The maximum number of concurrent connections to the same host
         (identified by the hostname). If the limit is exceeded, then the
         additional requests are queued until previous connections are
-        closed.
+        closed. Both persistent and non-persistent connections are counted
+        in this limit.
 
         The default value for this is 4, and it is highly advisable to not
-        increase it.
+        increase it much.
+
+        For comparison: the RFC's recommend 4 non-persistent or 2 persistent
+        connections, older browsers used 2, newers (such as firefox 3)
+        typically use 6, and Opera uses 8 because like, they have the
+        fastest browser and give a shit for everybody else on the planet.
+
+    $AnyEvent::HTTP::PERSISTENT_TIMEOUT
+        The time after which idle persistent conenctions get closed by
+        AnyEvent::HTTP (default: 3).
 
     $AnyEvent::HTTP::ACTIVE
         The number of active connections. This is not the number of
         currently running requests, but the number of currently open and
-        non-idle TCP connections. This number of can be useful for
+        non-idle TCP connections. This number can be useful for
         load-leveling.
 
   SOCKS PROXIES
