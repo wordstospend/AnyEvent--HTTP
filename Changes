@@ -7,8 +7,8 @@ TODO: download example
 	- hopefully fully upgraded to HTTP/1.1.
         - support HTTP/1.1 persistent and HTTP/1.0 keep-alive connections.
 	- drop https-proxy-connection support. seems unused and ill-specified.
-        - use more differentiated status 59x codes.
-        - properly use url hostname to verify server certificate.
+        - use more differentiated 59x status codes.
+        - properly use url (not proxy) hostname to verify server certificate.
         - much improved cookie implementation:
            - properly implement cookie expiry (for new cookies).
            - new function to expire cookies and sessions: cookie_jar_expire.
@@ -19,9 +19,9 @@ TODO: download example
            - accept and send lots of invalid cookie values exactly as
              they were received - this should not impact valid values.
            - lowercase cookie parameter names for improved compatibility.
-           - support the max-age cookie parameter, used if expires is missing.
+           - support the max-age cookie parameter, overrides expires.
            - support cookie dates (and a few others) in parse_date.
-           - suppoer value-less parameters (e.g. secure, httponly).
+           - properly support value-less parameters (e.g. secure, httponly).
         - do not send Host: header in a proxy CONNECT request.
 	- use common::sense.
         - lowercase hostnames and schemes.
