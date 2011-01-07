@@ -68,7 +68,7 @@ TODO: download example
 	- provide on_prepare callback on common request.
 
 1.42 Wed Aug  5 18:43:01 CEST 2009
-	- allow suppression of auto-supplied header fieds by specifying undef
+	- allow suppression of auto-supplied header fields by specifying undef
           (requested by Mr Guest).
         - allow proxy scheme to be missing, as documented
           (reported by Mr Guest).
