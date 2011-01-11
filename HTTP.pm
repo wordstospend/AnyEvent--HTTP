@@ -17,7 +17,7 @@ run a supported event loop.
 
 This module implements a simple, stateless and non-blocking HTTP
 client. It supports GET, POST and other request methods, cookies and more,
-all on a very low level. It can follow redirects supports proxies and
+all on a very low level. It can follow redirects, supports proxies, and
 automatically limits the number of connections to the values specified in
 the RFC.
 
