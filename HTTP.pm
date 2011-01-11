@@ -48,7 +48,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '2.0';
+our $VERSION = '2.01';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -1327,7 +1327,109 @@ eval {
    set_proxy $ENV{http_proxy};
 };
 
-=head2 SOCKS PROXIES
+=head2 SHOWCASE
+
+This section contaisn some more elaborate "real-world" examples or code
+snippets.
+
+=head2 HTTP/1.1 FILE DOWNLOAD
+
+Downloading files with HTTP cna be quite tricky, especially when something
+goes wrong and you want tor esume.
+
+Here is a function that initiates and resumes a download. It uses the
+last modified time to check for file content changes, and works with many
+HTTP/1.0 servers as well, and usually falls back to a complete re-download
+on older servers.
+
+It calls the completion callback with either C<undef>, which means a
+nonretryable error occured, C<0> when the download was partial and should
+be retried, and C<1> if it was successful.
+
+   use AnyEvent::HTTP;
+
+   sub download($$$) {
+      my ($url, $file, $cb) = @_;
+
+      open my $fh, "+<", $file
+         or die "$file: $!";
+
+      my %hdr;
+      my $ofs = 0;
+
+      warn stat $fh;
+      warn -s _;
+      if (stat $fh and -s _) {
+         $ofs = -s _;
+         warn "-s is ", $ofs;#d#
+         $hdr{"if-unmodified-since"} = AnyEvent::HTTP::format_date +(stat _)[9];
+         $hdr{"range"} = "bytes=$ofs-";
+      }
+
+      http_get $url,
+         headers   => \%hdr,
+         on_header => sub {
+            my ($hdr) = @_;
+
+            if ($hdr->{Status} == 200 && $ofs) {
+               # resume failed
+               truncate $fh, $ofs = 0;
+            }
+
+            sysseek $fh, $ofs, 0;
+
+            1
+         },
+         on_body   => sub {
+            my ($data, $hdr) = @_;
+
+            if ($hdr->{Status} =~ /^2/) {
+               length $data == syswrite $fh, $data
+                  or return; # abort on write errors
+            }
+
+            1
+         },
+         sub {
+            my (undef, $hdr) = @_;
+
+            my $status = $hdr->{Status};
+
+            if (my $time = AnyEvent::HTTP::parse_date $hdr->{"last-modified"}) {
+               utime $fh, $time, $time;
+            }
+
+            if ($status == 200 || $status == 206 || $status == 416) {
+               # download ok || resume ok || file already fully downloaded
+               $cb->(1, $hdr);
+
+            } elsif ($status == 412) {
+               # file has changed while resuming, delete and retry
+               unlink $file;
+               $cb->(0, $hdr);
+
+            } elsif ($status == 500 or $status == 503 or $status =~ /^59/) {
+               # retry later
+               $cb->(0, $hdr);
+
+            } else {
+               $cb->(undef, $hdr);
+            }
+         }
+      ;
+   }
+
+   download "http://server/somelargefile", "/tmp/somelargefile", sub {
+      if ($_[0]) {
+         print "OK!\n";
+      } elsif (defined $_[0]) {
+         print "please retry later\n";
+      } else {
+         print "ERROR\n";
+      }
+   };
+
+=head3 SOCKS PROXIES
 
 Socks proxies are not directly supported by AnyEvent::HTTP. You can
 compile your perl to support socks, or use an external program such as

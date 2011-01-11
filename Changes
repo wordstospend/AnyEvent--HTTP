@@ -1,9 +1,10 @@
 Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
-TODO: download example
 
+2.01 Tue Jan 11 07:38:15 CET 2011
 	- add missing dependency on common::sense.
+        - add a resume download example.
 
 2.0  Tue Jan  4 09:16:56 CET 2011
 	- hopefully fully upgraded to HTTP/1.1.

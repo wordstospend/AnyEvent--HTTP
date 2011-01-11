@@ -10,7 +10,7 @@ my $mm = MM->new({
     VERSION_FROM => "HTTP.pm",
     PREREQ_PM    => {
        AnyEvent      => 5.0,
-       common.:sense => 3.3,
+       common::sense => 3.3,
     },
 });
 
