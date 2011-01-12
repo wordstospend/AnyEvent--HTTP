@@ -48,7 +48,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '2.01';
+our $VERSION = '2.02';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -548,7 +548,7 @@ sub cookie_jar_set_cookie($$$$) {
             $value =~ s/\\(.)/$1/gs;
          }
 
-         push @kv, lc $name, $value;
+         push @kv, @kv ? lc $name : $name, $value;
 
          last unless /\G\s*;/gc;
       }
