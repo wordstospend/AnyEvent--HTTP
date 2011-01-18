@@ -2,6 +2,9 @@ Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 
+2.03 Tue Jan 18 18:49:35 CET 2011
+	- dummy reupload, file gone from cpan somehow.
+
 2.02 Wed Jan 12 04:29:37 CET 2011
 	- do not lowercase cookie names, only parameter names.
 
