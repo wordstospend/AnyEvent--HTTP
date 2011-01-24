@@ -1335,7 +1335,7 @@ snippets.
 =head2 HTTP/1.1 FILE DOWNLOAD
 
 Downloading files with HTTP can be quite tricky, especially when something
-goes wrong and you want tor esume.
+goes wrong and you want to resume.
 
 Here is a function that initiates and resumes a download. It uses the
 last modified time to check for file content changes, and works with many
