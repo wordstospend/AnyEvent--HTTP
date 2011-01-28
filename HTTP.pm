@@ -715,7 +715,7 @@ sub http_request($$@) {
    my $timeout = $arg{timeout} || $TIMEOUT;
 
    my ($uscheme, $uauthority, $upath, $query, undef) = # ignore fragment
-      $url =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:(\?[^#]*))?(?:#(.*))?|;
+      $url =~ m|^([^:/?#]+):(?://([^/?#]*))?([^?#]*)(?:(\?[^#]*))?(?:#(.*))?$|;
 
    $uscheme = lc $uscheme;
 
