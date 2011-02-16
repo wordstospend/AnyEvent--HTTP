@@ -2,8 +2,10 @@ Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 
+TODO: $location = URI->new_abs($location, "$scheme://$host:$port$path_query")->as_string;
         - require scheme in urls, also use a stricter match to match urls,
           leading or trailing garbage is no longer tolerated.
+        - EXPERIMENTAL: allow = in cookie values.
 
 2.03 Tue Jan 18 18:49:35 CET 2011
 	- dummy reupload, file gone from cpan somehow.
