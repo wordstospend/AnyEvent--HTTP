@@ -1,11 +1,13 @@
 Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
+TODO: httpbis: $location = URI->new_abs($location, "$scheme://$host:$port$path_query")->as_string;
 
-TODO: $location = URI->new_abs($location, "$scheme://$host:$port$path_query")->as_string;
+2.04 Sat Feb 19 07:45:24 CET 2011
+	- "proxy => undef" now overrides any global proxy when specified.
         - require scheme in urls, also use a stricter match to match urls,
           leading or trailing garbage is no longer tolerated.
-        - EXPERIMENTAL: allow = in cookie values.
+        - EXPERIMENTAL: allow '=' in cookie values.
 
 2.03 Tue Jan 18 18:49:35 CET 2011
 	- dummy reupload, file gone from cpan somehow.

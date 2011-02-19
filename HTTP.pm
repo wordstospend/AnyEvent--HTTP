@@ -48,7 +48,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '2.03';
+our $VERSION = '2.04';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -181,10 +181,13 @@ Default timeout is 5 minutes.
 
 =item proxy => [$host, $port[, $scheme]] or undef
 
-Use the given http proxy for all requests. If not specified, then the
-default proxy (as specified by C<$ENV{http_proxy}>) is used.
+Use the given http proxy for all requests, or no proxy if C<undef> is
+used.
 
 C<$scheme> must be either missing or must be C<http> for HTTP.
+
+If not specified, then the default proxy is used (see
+C<AnyEvent::HTTP::set_proxy>).
 
 =item body => $string
 
@@ -711,7 +714,7 @@ sub http_request($$@) {
    return $cb->(undef, { @pseudo, Status => 599, Reason => "Too many redirections" })
       if $recurse < 0;
 
-   my $proxy   = $arg{proxy}   || $PROXY;
+   my $proxy   = exists $arg{proxy} ? $arg{proxy} : $PROXY;
    my $timeout = $arg{timeout} || $TIMEOUT;
 
    my ($uscheme, $uauthority, $upath, $query, undef) = # ignore fragment
@@ -1173,6 +1176,10 @@ Sets the default proxy server to use. The proxy-url must begin with a
 string of the form C<http://host:port>, croaks otherwise.
 
 To clear an already-set proxy, use C<undef>.
+
+When AnyEvent::HTTP is laoded for the first time it will query the
+default proxy from the operating system, currently by looking at
+C<$ENV{http_proxy>}.
 
 =item AnyEvent::HTTP::cookie_jar_expire $jar[, $session_end]
 
