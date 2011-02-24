@@ -171,6 +171,9 @@ You really should provide your own C<User-Agent:> header value that is
 appropriate for your program - I wouldn't be surprised if the default
 AnyEvent string gets blocked by webservers sooner or later.
 
+Also, make sure that your headers names and values do not contain any
+embedded newlines.
+
 =item timeout => $seconds
 
 The time-out to use for various stages - each connect attempt will reset
