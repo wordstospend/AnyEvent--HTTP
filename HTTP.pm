@@ -48,7 +48,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '2.04';
+our $VERSION = '2.1';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -775,14 +775,14 @@ sub http_request($$@) {
    my $idempotent = $method =~ /^(?:GET|HEAD|PUT|DELETE|OPTIONS|TRACE)$/;
 
    # default value for keepalive is true iff the request is for an idempotent method
-   my $keepalive = exists $arg{keepalive} ? !!$arg{keepalive} : $idempotent;
-   my $keepalive10 = exists $arg{keepalive10} ? $arg{keepalive10} : !$proxy;
-   my $keptalive; # true if this is actually a recycled connection
+   my $persistent = exists $arg{persistent} ? !!$arg{persistent} : $idempotent;
+   my $keepalive  = exists $arg{keepalive}  ? !!$arg{keepalive}  : !$proxy;
+   my $was_persistent; # true if this is actually a recycled connection
 
    # the key to use in the keepalive cache
    my $ka_key = "$uhost\x00$arg{sessionid}";
 
-   $hdr{connection} = ($keepalive ? $keepalive10 ? "keep-alive " : "" : "close ") . "Te"; #1.1
+   $hdr{connection} = ($persistent ? $keepalive ? "keep-alive " : "" : "close ") . "Te"; #1.1
    $hdr{te}         = "trailers" unless exists $hdr{te}; #1.1
 
    my %state = (connect_guard => 1);
@@ -876,11 +876,11 @@ sub http_request($$@) {
             }
          }
 
-         my $finish = sub { # ($data, $err_status, $err_reason[, $keepalive])
+         my $finish = sub { # ($data, $err_status, $err_reason[, $persistent])
             if ($state{handle}) {
                # handle keepalive
                if (
-                  $keepalive
+                  $persistent
                   && $_[3]
                   && ($hdr{HTTPVersion} < 1.1
                       ? $hdr{connection} =~ /\bkeep-?alive\b/i
@@ -909,13 +909,17 @@ sub http_request($$@) {
                # we ignore any errors, as it is very common to receive
                # Content-Length != 0 but no actual body
                # we also access %hdr, as $_[1] might be an erro
-               http_request (
-                  $method  => $hdr{location},
-                  %arg,
-                  recurse  => $recurse - 1,
-                  Redirect => [$_[0], \%hdr],
-                  $cb
-               );
+               $state{recurse} =
+                  http_request (
+                     $method  => $hdr{location},
+                     %arg,
+                     recurse  => $recurse - 1,
+                     Redirect => [$_[0], \%hdr],
+                     sub {
+                        %state = ();
+                        &$cb
+                     },
+                  );
             } else {
                $cb->($_[0], \%hdr);
             }
@@ -1037,17 +1041,22 @@ sub http_request($$@) {
 
       # if keepalive is enabled, then the server closing the connection
       # before a response can happen legally - we retry on idempotent methods.
-      if ($keptalive && $idempotent) {
+      if ($was_persistent && $idempotent) {
          my $old_eof = $hdl->{on_eof};
          $hdl->{on_eof} = sub {
             _destroy_state %state;
 
-            http_request (
-               $method => $url,
-               %arg,
-               keepalive => 0,
-               $cb
-            );
+            %state = ();
+            $state{recurse} =
+               http_request (
+                  $method => $url,
+                  %arg,
+                  keepalive => 0,
+                  sub {
+                     %state = ();
+                     &$cb
+                  }
+               );
          };
          $hdl->on_read (sub {
             return unless %state;
@@ -1065,13 +1074,14 @@ sub http_request($$@) {
    my $prepare_handle = sub {
       my ($hdl) = $state{handle};
 
-      $hdl->timeout ($timeout);
       $hdl->on_error (sub {
          _error %state, $cb, { @pseudo, Status => $ae_error, Reason => $_[2] };
       });
       $hdl->on_eof (sub {
          _error %state, $cb, { @pseudo, Status => $ae_error, Reason => "Unexpected end-of-file" };
       });
+      $hdl->timeout_reset;
+      $hdl->timeout ($timeout);
    };
 
    # connected to proxy (or origin server)
@@ -1122,11 +1132,18 @@ sub http_request($$@) {
 
       # try to use an existing keepalive connection, but only if we, ourselves, plan
       # on a keepalive request (in theory, this should be a separate config option).
-      if ($keepalive && $KA_CACHE{$ka_key}) {
-         $keptalive = 1;
+      if ($persistent && $KA_CACHE{$ka_key}) {
+         $was_persistent = 1;
+
          $state{handle} = ka_fetch $ka_key;
+         $state{handle}->destroyed
+            and die "got a destructed habndle. pah\n";#d#
          $prepare_handle->();
+         $state{handle}->destroyed
+            and die "got a destructed habndle. pa2\n";#d#
          $handle_actual_request->();
+         $state{handle}->destroyed
+            and die "got a destructed habndle. pa3\n";#d#
 
       } else {
          my $tcp_connect = $arg{tcp_connect}

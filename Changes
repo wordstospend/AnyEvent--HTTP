@@ -3,6 +3,15 @@ Revision history for AnyEvent::HTTP
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: httpbis: $location = URI->new_abs($location, "$scheme://$host:$port$path_query")->as_string;
 
+2.1  Thu Feb 24 13:11:51 CET 2011
+	- the keepalive and persistent parameters were actually named
+          differently in the code - they now work as documented.
+        - fix a bug where callbacks would sometimes never be called when
+          the request timeout is near or below the persistent conenction
+          timeout (testcase by Cindy Wang).
+        - destroying the guard would have no effect when a request was
+          recursing or being retired.
+
 2.04 Sat Feb 19 07:45:24 CET 2011
 	- "proxy => undef" now overrides any global proxy when specified.
         - require scheme in urls, also use a stricter match to match urls,
