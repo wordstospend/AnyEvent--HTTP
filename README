@@ -123,6 +123,9 @@ DESCRIPTION
             if the default AnyEvent string gets blocked by webservers sooner
             or later.
 
+            Also, make sure that your headers names and values do not
+            contain any embedded newlines.
+
         timeout => $seconds
             The time-out to use for various stages - each connect attempt
             will reset the timeout, as will read or write activity, i.e.

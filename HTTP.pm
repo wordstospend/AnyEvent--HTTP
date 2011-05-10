@@ -48,7 +48,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '2.1';
+our $VERSION = '2.11';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -783,7 +783,7 @@ sub http_request($$@) {
    my $was_persistent; # true if this is actually a recycled connection
 
    # the key to use in the keepalive cache
-   my $ka_key = "$uhost\x00$arg{sessionid}";
+   my $ka_key = "$uscheme\x00$uhost\x00$uport\x00$arg{sessionid}";
 
    $hdr{connection} = ($persistent ? $keepalive ? "keep-alive " : "" : "close ") . "Te"; #1.1
    $hdr{te}         = "trailers" unless exists $hdr{te}; #1.1
