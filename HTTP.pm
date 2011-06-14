@@ -1140,13 +1140,13 @@ sub http_request($$@) {
 
          $state{handle} = ka_fetch $ka_key;
          $state{handle}->destroyed
-            and die "got a destructed habndle. pah\n";#d#
+            and die "got a destructed handle. pah\n";#d#
          $prepare_handle->();
          $state{handle}->destroyed
-            and die "got a destructed habndle. pa2\n";#d#
+            and die "got a destructed handle. pa2\n";#d#
          $handle_actual_request->();
          $state{handle}->destroyed
-            and die "got a destructed habndle. pa3\n";#d#
+            and die "got a destructed handle. pa3\n";#d#
 
       } else {
          my $tcp_connect = $arg{tcp_connect}
