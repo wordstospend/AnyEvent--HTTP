@@ -494,7 +494,7 @@ DESCRIPTION
           warn -s _;
           if (stat $fh and -s _) {
              $ofs = -s _;
-             warn "-s is ", $ofs;#d#
+             warn "-s is ", $ofs;
              $hdr{"if-unmodified-since"} = AnyEvent::HTTP::format_date +(stat _)[9];
              $hdr{"range"} = "bytes=$ofs-";
           }

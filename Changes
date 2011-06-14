@@ -3,6 +3,10 @@ Revision history for AnyEvent::HTTP
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: httpbis: $location = URI->new_abs($location, "$scheme://$host:$port$path_query")->as_string;
 
+2.12 Tue Jun 14 07:22:54 CEST 2011
+	- fix a possible 'Can't call method "destroyed"' error (which would
+          have been reported by Carl Chambers).
+
 2.11 Tue May 10 14:33:28 CEST 2011
 	- the keepalive session cache wouldn't take port and scheme into account
           when reusing connection - potentially causing information leaks

@@ -48,7 +48,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '2.11';
+our $VERSION = '2.12';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -1140,13 +1140,11 @@ sub http_request($$@) {
 
          $state{handle} = ka_fetch $ka_key;
          $state{handle}->destroyed
-            and die "got a destructed handle. pah\n";#d#
+            and die "AnyEvent::HTTP: unexpectedly got a destructed handle (1), please report.";#d#
          $prepare_handle->();
          $state{handle}->destroyed
-            and die "got a destructed handle. pa2\n";#d#
+            and die "AnyEvent::HTTP: unexpectedly got a destructed handle (2), please report.";#d#
          $handle_actual_request->();
-         $state{handle}->destroyed
-            and die "got a destructed handle. pa3\n";#d#
 
       } else {
          my $tcp_connect = $arg{tcp_connect}
@@ -1388,7 +1386,7 @@ be retried, and C<1> if it was successful.
       warn -s _;
       if (stat $fh and -s _) {
          $ofs = -s _;
-         warn "-s is ", $ofs;#d#
+         warn "-s is ", $ofs;
          $hdr{"if-unmodified-since"} = AnyEvent::HTTP::format_date +(stat _)[9];
          $hdr{"range"} = "bytes=$ofs-";
       }
