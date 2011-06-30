@@ -964,7 +964,7 @@ sub http_request($$@) {
 
             $state{read_chunk} = sub {
                $_[1] =~ /^([0-9a-fA-F]+)/
-                  or $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
+                  or return $finish->(undef, $ae_error => "Garbled chunked transfer encoding");
 
                my $len = hex $1;
 
