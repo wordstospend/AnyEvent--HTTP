@@ -2,11 +2,13 @@ Revision history for AnyEvent::HTTP
 
 TODO: provide lwp_request function that takes an lwp http requets and returns a http response.
 TODO: httpbis: $location = URI->new_abs($location, "$scheme://$host:$port$path_query")->as_string;
-
 TODO: set_proxy hook
 TODO: use proxy hook
+
+2.13 Wed Jul 27 17:53:58 CEST 2011
 	- garbled chunked responses caused AnyEvent::HTTP to malfunction
           (patch by Dmitri Melikyan).
+        - fix GET => HEAD in one case in the documentation (James Bromberger).
 
 2.12 Tue Jun 14 07:22:54 CEST 2011
 	- fix a possible 'Can't call method "destroyed"' error (which would

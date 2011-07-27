@@ -338,7 +338,7 @@ DESCRIPTION
         timeout of 30 seconds.
 
            http_request
-              GET     => "https://www.google.com",
+              HEAD    => "https://www.google.com",
               headers => { "user-agent" => "MySearchClient 1.0" },
               timeout => 30,
               sub {

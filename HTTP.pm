@@ -48,7 +48,7 @@ use AnyEvent::Handle ();
 
 use base Exporter::;
 
-our $VERSION = '2.12';
+our $VERSION = '2.13';
 
 our @EXPORT = qw(http_get http_post http_head http_request);
 
@@ -386,7 +386,7 @@ Example: do a HTTP HEAD request on https://www.google.com/, use a
 timeout of 30 seconds.
 
    http_request
-      GET     => "https://www.google.com",
+      HEAD    => "https://www.google.com",
       headers => { "user-agent" => "MySearchClient 1.0" },
       timeout => 30,
       sub {
