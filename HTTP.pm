@@ -1255,7 +1255,7 @@ The default value for the C<recurse> request parameter (default: C<10>).
 
 =item $AnyEvent::HTTP::TIMEOUT
 
-The default timeout for conenction operations (default: C<300>).
+The default timeout for connection operations (default: C<300>).
 
 =item $AnyEvent::HTTP::USERAGENT
 
