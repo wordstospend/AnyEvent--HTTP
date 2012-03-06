@@ -769,10 +769,10 @@ sub http_request($$@) {
    }
 
    # leave out fragment and query string, just a heuristic
-   $hdr{referer}      = "$uscheme://$uauthority$upath" unless exists $hdr{referer};
-   $hdr{"user-agent"} = $USERAGENT                     unless exists $hdr{"user-agent"};
+   $hdr{Referer}      = "$uscheme://$uauthority$upath" unless exists $hdr{Referer};
+   $hdr{"User-Agent"} = $USERAGENT                     unless exists $hdr{"User-Agent"};
 
-   $hdr{"content-length"} = length $arg{body}
+   $hdr{"Content-Length"} = length $arg{body}
       if length $arg{body} || $method ne "GET";
 
    my $idempotent = $method =~ /^(?:GET|HEAD|PUT|DELETE|OPTIONS|TRACE)$/;
@@ -785,8 +785,8 @@ sub http_request($$@) {
    # the key to use in the keepalive cache
    my $ka_key = "$uscheme\x00$uhost\x00$uport\x00$arg{sessionid}";
 
-   $hdr{connection} = ($persistent ? $keepalive ? "keep-alive " : "" : "close ") . "Te"; #1.1
-   $hdr{te}         = "trailers" unless exists $hdr{te}; #1.1
+   $hdr{Connection} = ($persistent ? $keepalive ? "keep-alive " : "" : "close ") . "Te"; #1.1
+   $hdr{TE}         = "trailers" unless exists $hdr{TE}; #1.1
 
    my %state = (connect_guard => 1);
 
